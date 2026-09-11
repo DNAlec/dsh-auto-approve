@@ -1,0 +1,62 @@
+{
+  "name": "dsh-auto-approve",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 自动审批门控 + QQ 官方 Bot 审批推送（支持扫码接入）+ 设置页",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "client.js",
+    "locales.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/rules.mjs && node --check src/tickets.mjs && node --check src/qqbot.mjs && node --check src/provisioning.mjs && node --check src/preset-patch.mjs && node --check src/util.mjs && node --check locales.mjs && node --check client.js"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "approval",
+    "auto-approve",
+    "自动审批"
+  ],
+  "license": "MIT",
+  "author": "DNAlec",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DNAlec/dsh-auto-approve.git"
+  },
+  "homepage": "https://github.com/DNAlec/dsh-auto-approve",
+  "bugs": {
+    "url": "https://github.com/DNAlec/dsh-auto-approve/issues"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "optionalDependencies": {
+    "@tencent-connect/qqbot-connector": "^1.2.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  }
+}

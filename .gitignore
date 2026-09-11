@@ -1,0 +1,12 @@
+node_modules/
+*.log
+.DS_Store
+coverage/
+*.tgz
+.env
+.env.*
+qqbot.json
+allowlist.json
+config.json
+events.jsonl
+audit.log
