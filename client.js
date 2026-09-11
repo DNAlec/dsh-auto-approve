@@ -8,7 +8,7 @@
  * 恢复默认：第一次点武装，5 秒内再点才执行。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-auto-approve',
+  id: '@dnalec/dsh-auto-approve',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -1306,7 +1306,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = plugin.apply
     exports.inject = plugin.inject
-    exports.name = 'dsh-auto-approve'
+    exports.name = '@dnalec/dsh-auto-approve'
     return module.exports
   },
 })

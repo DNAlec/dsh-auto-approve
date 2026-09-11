@@ -13,8 +13,10 @@ Scope is approval only. The QQ bot is a notify-and-reply channel, not an agent c
 Pin a release tag (recommended). `main` is for published commits; in-progress work lives on other branches.
 
 ```sh
-dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.2
+dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.3
 ```
+
+`v0.1.1` and `v0.1.2` fail to load the Web client (`loaded without registering`). Use **v0.1.3** or later.
 
 From npm, after a tagged release:
 
@@ -140,9 +142,9 @@ For agents working in this repository, follow [AGENTS.md](AGENTS.md).
 
 ## Releasing
 
-1. Set `package.json` `version` (for example `0.1.2`) and merge to `main`.
+1. Set `package.json` `version` (for example `0.1.3`) and merge to `main`.
 2. On npmjs.com, add a Trusted Publisher for this GitHub repo, workflow file `publish.yml` (once).
-3. Tag and push: `git tag v0.1.2 && git push origin v0.1.2`.
+3. Tag and push: `git tag v0.1.3 && git push origin v0.1.3`.
 
 The tag must match `package.json` version. The workflow runs tests, then `npm publish`. The first publish of the package name may need a local `npm login` and `npm publish --access public` once; later tags are enough.
 

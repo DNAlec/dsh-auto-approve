@@ -8,7 +8,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameS
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-export const NAME = 'dsh-auto-approve'
+export const NAME = '@dnalec/dsh-auto-approve'
 
 export function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh')

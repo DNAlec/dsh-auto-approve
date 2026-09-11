@@ -10,6 +10,8 @@ Host API 以 DSH 源码为准：`/home/alec/deepseek-harness/`（审批 / 预设
 
 ## 硬约束
 
+- **改名必须四同步**：`package.json` name、`cordis.patch.yml` 的 name、`src/util.mjs` 的 `NAME`（→ index.mjs `export const name`）、`client.js` 的 `__ModuleLoader__.load({ id })` + `exports.name`。只改 package.json 重装会炸 `loaded without registering "..."`（client bundle 找不到注册）。RPC 路径 `/api/<名>` 与 client.js 的 `rpc.call('/api', '<名>')` 需一致（可独立于插件名）。
+
 - `permissionPresets.current(session)`，禁止 `session.events`。
 - `danger-full-access` 进入同一条判定管道，不因模式名短路。
 - 管道：关键词（拒绝 > 人工 > 允许）→ 审核表由模型归类、程序按表执行。解析失败转人工。风险类默认拒绝；「安全」默认允许；「其他」默认人工（拿不准）。

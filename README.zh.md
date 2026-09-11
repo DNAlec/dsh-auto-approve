@@ -13,8 +13,10 @@
 请钉死发行 tag（推荐）。`main` 只放已发布的提交，开发走其他分支。
 
 ```sh
-dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.2
+dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.3
 ```
+
+`v0.1.1` / `v0.1.2` 无法加载网页客户端（`loaded without registering`）。请用 **v0.1.3** 或更新。
 
 打 tag 发布后也可从 npm 安装：
 
@@ -140,9 +142,9 @@ npm run check
 
 ## 发布
 
-1. 把 `package.json` 的 `version` 改成目标版本（例如 `0.1.2`），合进 `main`。
+1. 把 `package.json` 的 `version` 改成目标版本（例如 `0.1.3`），合进 `main`。
 2. 在 npmjs.com 给本仓库配置 Trusted Publisher，工作流文件填 `publish.yml`（只需一次）。
-3. 打 tag 并推送：`git tag v0.1.2 && git push origin v0.1.2`。
+3. 打 tag 并推送：`git tag v0.1.3 && git push origin v0.1.3`。
 
 tag 必须与 `package.json` 版本一致。工作流会先跑测试再 `npm publish`。这个包名第一次上架可能需要本机 `npm login` 后执行一次 `npm publish --access public`；之后推 tag 即可。
 
