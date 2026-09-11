@@ -1,6 +1,6 @@
 {
-  "name": "dsh-auto-approve",
-  "version": "0.1.0",
+  "name": "@dnalec/dsh-auto-approve",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 自动审批门控 + QQ 官方 Bot 审批推送（支持扫码接入）+ 设置页",
   "type": "module",
   "main": "./src/index.mjs",
@@ -31,6 +31,9 @@
     "自动审批"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "DNAlec",
   "repository": {
     "type": "git",

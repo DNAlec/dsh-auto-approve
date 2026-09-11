@@ -13,7 +13,13 @@ Scope is approval only. The QQ bot is a notify-and-reply channel, not an agent c
 Pin a release tag (recommended). `main` is for published commits; in-progress work lives on other branches.
 
 ```sh
-dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.0
+dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.1
+```
+
+From npm, after a tagged release:
+
+```sh
+dsh plugin --profile web add @dnalec/dsh-auto-approve
 ```
 
 A local checkout is fine while developing:
@@ -35,7 +41,7 @@ In Settings → **Auto-approve**:
 
 Credentials are stored only in `~/.dsh/approval-bridge/qqbot.json` (`0600`). Do not commit them.
 
-Uninstall (`dsh plugin --profile web remove dsh-auto-approve`) drops this plugin from the bundle stack after a restart. The `auto-approve` preset may remain in the profile patch: without the plugin it is ordinary `workspace-write` or `read-only` + `ask`. Rules, audit logs, and QQ credentials under `~/.dsh/auto-approve/` and `~/.dsh/approval-bridge/` are not deleted.
+Uninstall (`dsh plugin --profile web remove @dnalec/dsh-auto-approve`) drops this plugin from the bundle stack after a restart. The `auto-approve` preset may remain in the profile patch: without the plugin it is ordinary `workspace-write` or `read-only` + `ask`. Rules, audit logs, and QQ credentials under `~/.dsh/auto-approve/` and `~/.dsh/approval-bridge/` are not deleted.
 
 ## Behavior
 
@@ -132,6 +138,15 @@ Layout: `src/index.mjs` (host), `src/rules.mjs`, `src/tickets.mjs`, `src/qqbot.m
 
 For agents working in this repository, follow [AGENTS.md](AGENTS.md).
 
+## Releasing
+
+1. Set `package.json` `version` (for example `0.1.1`) and merge to `main`.
+2. On npmjs.com, add a Trusted Publisher for this GitHub repo, workflow file `publish.yml` (once).
+3. Tag and push: `git tag v0.1.1 && git push origin v0.1.1`.
+
+The tag must match `package.json` version. The workflow runs tests, then `npm publish`. The first publish of the package name may need a local `npm login` and `npm publish --access public` once; later tags are enough.
+
 ## License
+
 
 [MIT](LICENSE)

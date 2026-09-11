@@ -13,7 +13,13 @@
 请钉死发行 tag（推荐）。`main` 只放已发布的提交，开发走其他分支。
 
 ```sh
-dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.0
+dsh plugin --profile web add github:DNAlec/dsh-auto-approve#v0.1.1
+```
+
+打 tag 发布后也可从 npm 安装：
+
+```sh
+dsh plugin --profile web add @dnalec/dsh-auto-approve
 ```
 
 自己开发可以用本地路径：
@@ -35,7 +41,7 @@ dsh plugin --profile web add /path/to/this-repo
 
 凭据只存在 `~/.dsh/approval-bridge/qqbot.json`（`0600`），不要提交。
 
-卸载（`dsh plugin --profile web remove dsh-auto-approve`）后重启，插件随 bundle 层消失。`auto-approve` 预设可能仍留在 profile patch 里：没有本插件时它只是普通的 `workspace-write` 或 `read-only` + `ask`。`~/.dsh/auto-approve/` 与 `~/.dsh/approval-bridge/` 里的规则、审计和 QQ 凭据不会删除。
+卸载（`dsh plugin --profile web remove @dnalec/dsh-auto-approve`）后重启，插件随 bundle 层消失。`auto-approve` 预设可能仍留在 profile patch 里：没有本插件时它只是普通的 `workspace-write` 或 `read-only` + `ask`。`~/.dsh/auto-approve/` 与 `~/.dsh/approval-bridge/` 里的规则、审计和 QQ 凭据不会删除。
 
 ## 行为
 
@@ -132,6 +138,15 @@ npm run check
 
 在本仓库改代码的 agent 请遵循 [AGENTS.md](AGENTS.md)。
 
+## 发布
+
+1. 把 `package.json` 的 `version` 改成目标版本（例如 `0.1.1`），合进 `main`。
+2. 在 npmjs.com 给本仓库配置 Trusted Publisher，工作流文件填 `publish.yml`（只需一次）。
+3. 打 tag 并推送：`git tag v0.1.1 && git push origin v0.1.1`。
+
+tag 必须与 `package.json` 版本一致。工作流会先跑测试再 `npm publish`。这个包名第一次上架可能需要本机 `npm login` 后执行一次 `npm publish --access public`；之后推 tag 即可。
+
 ## 许可证
+
 
 [MIT](LICENSE)

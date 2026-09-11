@@ -1,0 +1,45 @@
+# Push a version tag (v0.1.0) to publish to npm.
+# Tag must match package.json "version" (without the leading v).
+#
+# One-time npmjs.com setup (Trusted Publisher, no long-lived token):
+#   Package → Settings → Trusted Publisher → GitHub Actions
+#     Organization or user: DNAlec
+#     Repository: dsh-auto-approve
+#     Workflow filename: publish.yml
+# First-ever publish of this package name may need a local `npm login`
+# and `npm publish --access public` once; afterwards tags are enough.
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$ver" ]; then
+            echo "tag v$tag does not match package.json version $ver"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm publish --access public --provenance
