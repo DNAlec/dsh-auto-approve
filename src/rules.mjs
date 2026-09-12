@@ -1,7 +1,7 @@
 /**
  * 判定管道纯函数（无 I/O）。
  *
- * 关键词只匹配工具名 + command + 路径 + workdir，不匹配 justification、description、文件正文。
+ * 关键词只匹配工具名 + command + 路径 + workdir（含会话 cwd；相对路径会拼到 cwd/workdir 上），不匹配 justification、description、文件正文。
  * 允许桶不匹配工具名，避免把 bash/write 整类放行。
  * 审核模型只归类；动作以本表为准。`other` 必须存在，解析失败视为 other。
  * allowlist.version 只增不改历史语义，用 prevVersion < N 做一次性迁移。
@@ -83,25 +83,25 @@ export function normalizeJudgePromptLang(value) {
  */
 export const DEFAULT_CRITERIA_ZH = [
   { id: 'deletion', label: '删除/覆盖不可再生数据', description: '以命令/路径/内容为准：删除、清空或不可逆覆盖用户数据、备份、历史或未提交内容；单文件常规源码/文档编辑不算', action: 'reject' },
-  { id: 'credential', label: '凭据/密钥/授权修改', description: '以路径或写入内容为准：密钥、token、证书私钥、.env、authorized_keys、kubeconfig 及授权/登录配置', action: 'reject' },
-  { id: 'remote', label: '远程系统/生产环境/数据库', description: '以实际命令为准：对远程主机/生产/数据库做写入，ssh/kubectl/云 CLI 的变更，或对外发布（publish/部署）；只读查询不算', action: 'reject' },
-  { id: 'system', label: '系统级路径/配置', description: '以命令/路径为准：/etc、/usr、/boot、/root、服务与防火墙、关机/重启，以及 crontab、shell rc、用户启动项', action: 'reject' },
+  { id: 'credential', label: '凭据/密钥/授权修改', description: '以路径或写入内容为准：密钥、token、证书私钥、.env、authorized_keys、kubeconfig、~/.aws、带 token 的 .npmrc、docker config.json 及授权/登录配置', action: 'reject' },
+  { id: 'remote', label: '远程系统/生产环境/数据库', description: '以实际命令为准：对远程主机/生产/数据库做写入，ssh/kubectl/云 CLI 的变更，以及 npm/pypi publish 或生产部署；只读查询和普通 git push 不算', action: 'reject' },
+  { id: 'system', label: '系统级路径/配置', description: '以命令/路径为准：/etc、/usr、/boot、/root、/var、/opt、Windows 系统目录、服务与防火墙、关机/重启，以及 crontab、shell rc、用户启动项；包管理器往系统前缀安装也算', action: 'reject' },
   { id: 'bulk', label: '批量不可回补操作', description: '以实际命令为准：递归/通配/循环的批量删除或覆盖，以及格式化、dd、git reset --hard、git clean、rsync --delete', action: 'reject' },
   { id: 'approval-config', label: '自动审批配置', description: '以路径/命令为准：修改 ~/.dsh 下自动审批的 allowlist、插件配置，或其它会改审批规则/门控的配置', action: 'reject' },
-  { id: 'safe', label: '安全/常规可回补', description: '以命令/路径/内容为准：能确认是常规可回补操作（源码、文档、测试、构建产物、可撤销编辑）。拿不准不要选此项', action: 'allow' },
-  { id: 'other', label: '其他', description: '以上风险类都不符合，且不能确认是否安全', action: 'human' },
+  { id: 'safe', label: '安全/常规可回补', description: '以命令/路径/内容为准：能确认是常规可回补操作（源码、文档、测试、构建产物、安装项目依赖、可撤销单文件编辑）。发包、提权、外发数据不要选。拿不准不要选此项', action: 'allow' },
+  { id: 'other', label: '其他（拿不准）', description: '风险类和 safe 都不符合，或拿不准。看起来无害但无法确认可回补的，也选这项', action: 'human' },
 ]
 
 /** 默认审核表（英文）。id / action 与中文包相同。 */
 export const DEFAULT_CRITERIA_EN = [
   { id: 'deletion', label: 'Delete/overwrite irreplaceable data', description: 'Based on command/path/content: delete, empty, or irreversibly overwrite user data, backups, history, or uncommitted work; ordinary single-file source or docs edits do not count', action: 'reject' },
-  { id: 'credential', label: 'Credentials/keys/auth changes', description: 'Based on path or write content: secrets, tokens, private keys, .env, authorized_keys, kubeconfig, and auth/login config', action: 'reject' },
-  { id: 'remote', label: 'Remote/production/database', description: 'Based on the actual command: writes to remote hosts, production, or databases; ssh/kubectl/cloud CLI mutations; or publishing/deploying. Read-only queries do not count', action: 'reject' },
-  { id: 'system', label: 'System paths/config', description: 'Based on command/path: /etc, /usr, /boot, /root, services and firewall, shutdown/reboot, plus crontab, shell rc, and user startup items', action: 'reject' },
+  { id: 'credential', label: 'Credentials/keys/auth changes', description: 'Based on path or write content: secrets, tokens, private keys, .env, authorized_keys, kubeconfig, ~/.aws, .npmrc with tokens, docker config.json, and auth/login config', action: 'reject' },
+  { id: 'remote', label: 'Remote/production/database', description: 'Based on the actual command: writes to remote hosts, production, or databases; ssh/kubectl/cloud CLI mutations; npm/pypi publish or production deploys. Read-only queries and ordinary git push do not count', action: 'reject' },
+  { id: 'system', label: 'System paths/config', description: 'Based on command/path: /etc, /usr, /boot, /root, /var, /opt, Windows system directories, services and firewall, shutdown/reboot, plus crontab, shell rc, and user startup items; package-manager installs into a system prefix also count', action: 'reject' },
   { id: 'bulk', label: 'Bulk irreversible operations', description: 'Based on the actual command: recursive/glob/loop bulk delete or overwrite, plus format, dd, git reset --hard, git clean, rsync --delete', action: 'reject' },
   { id: 'approval-config', label: 'Auto-approve configuration', description: 'Based on path/command: changing the auto-approve allowlist or plugin config under ~/.dsh, or other files that change approval rules/gating', action: 'reject' },
-  { id: 'safe', label: 'Safe/routine reversible', description: 'Based on command/path/content: confirmed routine reversible work (source, docs, tests, build artifacts, undoable edits). Do not pick this if unsure', action: 'allow' },
-  { id: 'other', label: 'Other', description: 'None of the risk rows apply, and safety cannot be confirmed', action: 'human' },
+  { id: 'safe', label: 'Safe/routine reversible', description: 'Based on command/path/content: confirmed routine reversible work (source, docs, tests, build artifacts, installing project dependencies, undoable single-file edits). Do not pick this for publishing, privilege escalation, or sending data out. Do not pick this if unsure', action: 'allow' },
+  { id: 'other', label: 'Other (unsure)', description: 'Neither a risk row nor safe fits, or you are unsure. Also pick this when it looks harmless but reversibility cannot be confirmed', action: 'human' },
 ]
 
 /** 兼容旧引用：空配置与迁移仍用中文出厂表。 */
@@ -125,7 +125,7 @@ export const CATEGORY_LABELS = {
   bulk: '批量不可回补操作',
   'approval-config': '自动审批配置',
   safe: '安全/常规可回补',
-  other: '其他',
+  other: '其他（拿不准）',
 }
 
 export function normalizePresetSandbox(value) {
@@ -294,7 +294,42 @@ export function normalizeAllowlist(raw) {
       owned.add(w)
     }
   }
-  cfg.version = 17
+  if (prevVersion < 18) {
+    // 刷出厂文案：只替换仍是旧中/英原文的行，不改用户自定义描述，不碰 action。
+    const prevCopy = {
+      zh: {
+        credential: { description: '以路径或写入内容为准：密钥、token、证书私钥、.env、authorized_keys、kubeconfig 及授权/登录配置' },
+        remote: { description: '以实际命令为准：对远程主机/生产/数据库做写入，ssh/kubectl/云 CLI 的变更，或对外发布（publish/部署）；只读查询不算' },
+        system: { description: '以命令/路径为准：/etc、/usr、/boot、/root、服务与防火墙、关机/重启，以及 crontab、shell rc、用户启动项' },
+        safe: { description: '以命令/路径/内容为准：能确认是常规可回补操作（源码、文档、测试、构建产物、可撤销编辑）。拿不准不要选此项' },
+        other: { label: '其他', description: '以上风险类都不符合，且不能确认是否安全' },
+      },
+      en: {
+        credential: { description: 'Based on path or write content: secrets, tokens, private keys, .env, authorized_keys, kubeconfig, and auth/login config' },
+        remote: { description: 'Based on the actual command: writes to remote hosts, production, or databases; ssh/kubectl/cloud CLI mutations; or publishing/deploying. Read-only queries do not count' },
+        system: { description: 'Based on command/path: /etc, /usr, /boot, /root, services and firewall, shutdown/reboot, plus crontab, shell rc, and user startup items' },
+        safe: { description: 'Based on command/path/content: confirmed routine reversible work (source, docs, tests, build artifacts, undoable edits). Do not pick this if unsure' },
+        other: { label: 'Other', description: 'None of the risk rows apply, and safety cannot be confirmed' },
+      },
+    }
+    const packs = { zh: DEFAULT_CRITERIA_ZH, en: DEFAULT_CRITERIA_EN }
+    for (const lang of ['zh', 'en']) {
+      const oldRows = prevCopy[lang]
+      const neu = packs[lang]
+      for (const id of Object.keys(oldRows)) {
+        const hit = cfg.criteria.find((c) => c.id === id)
+        const def = neu.find((c) => c.id === id)
+        const old = oldRows[id]
+        if (!hit || !def) continue
+        const sameLabel = Boolean(old.label && hit.label === old.label)
+        const sameDesc = Boolean(old.description && hit.description === old.description)
+        if (!sameLabel && !sameDesc) continue
+        hit.label = def.label
+        hit.description = def.description
+      }
+    }
+  }
+  cfg.version = 18
   cfg.judgeTimeoutMs = Number(cfg.judgeTimeoutMs) > 0 ? Number(cfg.judgeTimeoutMs) : 20000
   delete cfg.allowRules
   delete cfg.denyRules
@@ -310,10 +345,8 @@ export function defaultPluginConfig() {
     presetSandbox: 'workspace-write',
     judgePromptLang: 'zh',
     judge: { provider: '', model: '', reasoningEffort: '', timeoutMs: 20000 },
-    notify: { enabled: true, chatId: '', userId: '', timeoutSecs: 120 },
   }
 }
-
 export function cloneAllowlist(cfg) {
   const a = cfg && typeof cfg === 'object' ? cfg : {}
   return {
@@ -371,6 +404,20 @@ function moveKeyword(allowlist, kind, str) {
   allowlist.denyKeywords = allowlist.humanKeywords
 }
 
+
+export function fail(code, details) {
+  const out = { ok: false, code }
+  if (details && typeof details === 'object' && Object.keys(details).length) out.details = details
+  return out
+}
+
+export function codedThrow(code, details) {
+  const err = new Error(code)
+  err.code = code
+  if (details && typeof details === 'object') err.details = details
+  throw err
+}
+
 /**
  * 只改 draft，不写盘。调用方保存成功后再 copyAllowlistInto 回活对象。
  */
@@ -380,7 +427,7 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
       const row = value && typeof value === 'object' ? value : {}
       const id = String(row.id || '').trim()
       const hit = (allowlist.criteria || []).find((c) => c.id === id)
-      if (!hit) return { ok: false, error: '未找到该审核项' }
+      if (!hit) return fail('err.criterionNotFound')
       if (row.action !== undefined) hit.action = normalizeCriteriaAction(row.action)
       if (row.label !== undefined) hit.label = String(row.label || hit.label).trim() || hit.label
       if (row.description !== undefined) hit.description = String(row.description || '').trim()
@@ -395,26 +442,26 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
     }
     if (op === 'add') {
       const n = normalizeCriterion(value)
-      if (!n) return { ok: false, error: '需要 id 或 label' }
-      if ((allowlist.criteria || []).some((c) => c.id === n.id)) return { ok: false, error: 'id 已存在' }
+      if (!n) return fail('err.criterionNeedId')
+      if ((allowlist.criteria || []).some((c) => c.id === n.id)) return fail('err.criterionIdExists')
       allowlist.criteria.push(n)
       return { ok: true, added: true, auditLine: `CONFIG  criteria + ${n.id}` }
     }
     if (op === 'remove') {
       const id = String((value && value.id) || value || '').trim()
-      if (id === 'other') return { ok: false, error: '「其他」不可删除' }
+      if (id === 'other') return fail('err.criterionOtherLocked')
       const before = (allowlist.criteria || []).length
       allowlist.criteria = (allowlist.criteria || []).filter((c) => c.id !== id)
-      if (allowlist.criteria.length === before) return { ok: false, error: '未找到该审核项' }
+      if (allowlist.criteria.length === before) return fail('err.criterionNotFound')
       return { ok: true, removed: true, auditLine: `CONFIG  criteria - ${id}` }
     }
-    return { ok: false, error: 'criteria 使用 add/set/remove/reset' }
+    return fail('err.criteriaOp')
   }
 
   if (kind === 'judgeTimeoutMs') {
-    if (op !== 'set') return { ok: false, error: `${kind} 使用 set 操作` }
+    if (op !== 'set') return fail('err.opMustSet', { kind })
     const n = Number(value)
-    if (!Number.isFinite(n) || n <= 0) return { ok: false, error: '无效数值' }
+    if (!Number.isFinite(n) || n <= 0) return fail('err.invalidNumber')
     allowlist.judgeTimeoutMs = n
     return { ok: true, set: true, value: n, auditLine: `CONFIG  ${kind} → ${n}` }
   }
@@ -429,7 +476,7 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
     }
     const row = value && typeof value === 'object' ? value : { text: value }
     const str = String(row.text || row.keyword || '').trim()
-    if (!str) return { ok: false, error: '关键词不能为空' }
+    if (!str) return fail('err.keywordEmpty')
     if (op === 'add' || op === 'set') {
       const from = String(row.from || '').trim()
       if (op === 'set' && from && from !== str) {
@@ -441,7 +488,7 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
             if (String(list[i]) === from) { list.splice(i, 1); found = true }
           }
         }
-        if (!found) return { ok: false, error: '未找到该关键词' }
+        if (!found) return fail('err.keywordNotFound')
       }
       const bucket = actionToKeywordBucket(row.action)
       moveKeyword(allowlist, bucket, str)
@@ -462,33 +509,33 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
         }
       }
       allowlist.denyKeywords = allowlist.humanKeywords
-      if (!found) return { ok: false, error: '未找到该关键词' }
+      if (!found) return fail('err.keywordNotFound')
       return { ok: true, removed: true, auditLine: `CONFIG  keywords - ${str}` }
     }
-    return { ok: false, error: 'keywords 使用 add/set/remove/reset' }
+    return fail('err.keywordsOp')
   }
 
   if (KEYWORD_KINDS.has(kind)) {
     const bucket = keywordKind(kind)
     const str = String(value || '').trim()
-    if (!str) return { ok: false, error: '值不能为空' }
+    if (!str) return fail('err.valueEmpty')
     if (op === 'add') {
       moveKeyword(allowlist, bucket, str)
       return { ok: true, added: true, auditLine: `CONFIG  ${bucket} + ${str}` }
     }
     if (op === 'remove') {
       const list = allowlist[bucket]
-      if (!Array.isArray(list)) return { ok: false, error: `未知规则类型: ${bucket}` }
+      if (!Array.isArray(list)) return fail('err.unknownKind', { kind: bucket })
       const before = list.length
       for (let i = list.length - 1; i >= 0; i--) if (String(list[i]) === str) list.splice(i, 1)
       allowlist.denyKeywords = allowlist.humanKeywords
-      if (list.length === before) return { ok: false, error: '未找到匹配的规则' }
+      if (list.length === before) return fail('err.ruleNotFound')
       return { ok: true, removed: true, auditLine: `CONFIG  ${bucket} - ${str}` }
     }
-    return { ok: false, error: `未知操作: ${op}` }
+    return fail('err.unknownOp', { op: String(op || '') })
   }
 
-  return { ok: false, error: `未知规则类型: ${kind}` }
+  return fail('err.unknownKind', { kind: String(kind || '') })
 }
 
 export function mergePluginConfig(base, overlay) {
@@ -496,14 +543,23 @@ export function mergePluginConfig(base, overlay) {
   const b = base && typeof base === 'object' ? base : {}
   const o = overlay && typeof overlay === 'object' ? overlay : {}
   const judge = { ...d.judge, ...(b.judge || {}), ...(o.judge || {}) }
-  const notify = { ...d.notify, ...(b.notify || {}), ...(o.notify || {}) }
   return {
     onlyAutoApprovePreset: o.onlyAutoApprovePreset ?? b.onlyAutoApprovePreset ?? d.onlyAutoApprovePreset,
     presetSandbox: normalizePresetSandbox(o.presetSandbox ?? b.presetSandbox ?? d.presetSandbox),
     judgePromptLang: normalizeJudgePromptLang(o.judgePromptLang ?? b.judgePromptLang ?? d.judgePromptLang),
     judge,
-    notify,
   }
+}
+
+/** 从旧 approval-bridge/config.json 只抽出判定字段，丢掉 notify / channels。 */
+export function pickMigratablePluginConfig(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const out = {}
+  if (Object.prototype.hasOwnProperty.call(raw, 'onlyAutoApprovePreset')) out.onlyAutoApprovePreset = raw.onlyAutoApprovePreset
+  if (Object.prototype.hasOwnProperty.call(raw, 'presetSandbox')) out.presetSandbox = raw.presetSandbox
+  if (Object.prototype.hasOwnProperty.call(raw, 'judgePromptLang')) out.judgePromptLang = raw.judgePromptLang
+  if (raw.judge && typeof raw.judge === 'object') out.judge = raw.judge
+  return Object.keys(out).length ? out : null
 }
 
 /** DSH 升级文案：`escalate sandbox to <mode>: <justification>`。mode 只作展示，不短路。 */
@@ -554,7 +610,7 @@ export function lookupCriteria(criteria, id) {
   const list = criteria || []
   const hit = list.find((c) => c && c.id === id)
   if (hit) return hit
-  return list.find((c) => c && c.id === 'other') || { id: 'other', label: '其他', action: 'human' }
+  return list.find((c) => c && c.id === 'other') || { id: 'other', label: '其他（拿不准）', action: 'human' }
 }
 
 const TOOL_ARG_KEYS = [
@@ -622,13 +678,13 @@ const EXTRA_CARD_KEYS_EN = [
 export const RAW_ARG_LIMIT = 256 * 1024
 
 /**
- * 缓存用：尽量保留原文。展示/送审再 clip。
+ * 缓存用：尽量保留原文（含空字符串：write content='' 是截断文件）。展示/送审再 clip。
  */
 export function pickToolArgs(raw) {
   if (!raw || typeof raw !== 'object') return {}
   const out = {}
   for (const key of TOOL_ARG_KEYS) {
-    if (typeof raw[key] !== 'string' || !raw[key]) continue
+    if (typeof raw[key] !== 'string') continue
     out[key] = raw[key].length > RAW_ARG_LIMIT ? raw[key].slice(0, RAW_ARG_LIMIT) : raw[key]
   }
   return out
@@ -649,7 +705,7 @@ export function clipToolArgsForJudge(args) {
   const a = args || {}
   const out = {}
   for (const key of TOOL_ARG_KEYS) {
-    if (typeof a[key] !== 'string' || !a[key]) continue
+    if (typeof a[key] !== 'string') continue
     const lim = TOOL_ARG_LIMITS[key] || 1000
     out[key] = a[key].length > lim ? a[key].slice(0, lim) + '…' : a[key]
   }
@@ -671,7 +727,7 @@ export function clipToolArgsForEvent(args) {
   const a = args || {}
   const out = {}
   for (const key of TOOL_ARG_KEYS) {
-    if (typeof a[key] !== 'string' || !a[key]) continue
+    if (typeof a[key] !== 'string') continue
     const lim = EVENT_ARG_LIMITS[key] || 800
     out[key] = a[key].length > lim ? a[key].slice(0, lim) + '…' : a[key]
   }
@@ -683,7 +739,8 @@ export function hasToolPayload(args) {
   const a = args || {}
   return Boolean(
     a.command || a.file_path || a.path || a.old_string || a.new_string || a.content
-    || a.code || a.url || a.script || a.sql || a.prompt,
+    || a.code || a.url || a.script || a.sql || a.prompt
+    || a.query || a.input || a.text || a.body || a.message || a.pattern || a.selector,
   )
 }
 
@@ -737,15 +794,45 @@ export function takeCachedCall(map, sessionId, callId) {
 
 /**
  * 关键词干草。`reason` 参数保留以免改签名，但故意不用：升级理由会误伤允许桶。
+ * cwd 只进拒绝/人工干草，不进允许桶：目录名不能把该目录下所有工具放行。
  */
-export function formatKeywordHay(toolName, reason, args) {
+function isAbsoluteKeywordPath(p) {
+  const s = String(p || '')
+  if (!s) return true
+  if (s.startsWith('/') || s.startsWith('\\') || s.startsWith('~')) return true
+  return /^[a-zA-Z]:[\\/]/.test(s)
+}
+
+function joinKeywordPath(base, p) {
+  const root = String(base || '').replace(/[/\\]+$/, '')
+  const rel = String(p || '')
+  if (!root || !rel || isAbsoluteKeywordPath(rel)) return ''
+  const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/'
+  return root + sep + rel
+}
+
+export function formatKeywordHay(toolName, reason, args, cwd) {
   const a = args || {}
+  const extras = []
+  const bases = []
+  if (cwd) {
+    extras.push(cwd)
+    bases.push(cwd)
+  }
+  if (a.workdir && a.workdir !== cwd) bases.push(a.workdir)
+  for (const base of bases) {
+    for (const p of [a.file_path, a.path]) {
+      const joined = joinKeywordPath(base, p)
+      if (joined) extras.push(joined)
+    }
+  }
   return [
     toolName,
     a.command,
     a.file_path,
     a.path,
     a.workdir,
+    ...extras,
   ].filter(Boolean).join('\n')
 }
 
@@ -760,7 +847,15 @@ export function formatAllowKeywordHay(args) {
   ].filter(Boolean).join('\n')
 }
 
-/** 给审核模型看的卡片。含内容/cwd；模型理由只作补充。语言与提示词框架一致。 */
+/** 给审核模型看的卡片。含内容/cwd；模型理由只作补充。语言与提示词框架一致。空字符串也要展示（截断写入）。 */
+function cardArg(val, en) {
+  return val === '' ? (en ? '(empty)' : '(空)') : val
+}
+
+function hasCardArg(a, key) {
+  return typeof a[key] === 'string'
+}
+
 export function formatJudgeCard(toolName, mode, justification, args, cwd, lang) {
   const a = clipToolArgsForJudge(args)
   const en = normalizeJudgePromptLang(lang) === 'en'
@@ -770,16 +865,20 @@ export function formatJudgeCard(toolName, mode, justification, args, cwd, lang) 
     ? [`Tool: ${toolName}`, `Target sandbox: ${sandbox}`]
     : [`工具: ${toolName}`, `目标沙箱模式: ${sandbox}`]
   if (cwd) lines.push((en ? 'Working directory: ' : '工作目录: ') + cwd)
-  if (a.workdir && a.workdir !== cwd) lines.push((en ? 'Command working directory: ' : '命令工作目录: ') + a.workdir)
-  if (a.command) lines.push(en ? 'Command:' : '命令:', a.command)
-  if (a.file_path || a.path) lines.push((en ? 'Path: ' : '路径: ') + (a.file_path || a.path))
-  if (a.description) lines.push((en ? 'Description: ' : '描述: ') + a.description)
-  if (a.old_string) lines.push(en ? 'Original:' : '原文:', a.old_string)
-  if (a.new_string) lines.push(en ? 'Replacement:' : '改成:', a.new_string)
-  if (a.content) lines.push(en ? 'Write contents:' : '写入内容:', a.content)
+  if (hasCardArg(a, 'workdir') && a.workdir !== cwd) {
+    lines.push((en ? 'Command working directory: ' : '命令工作目录: ') + cardArg(a.workdir, en))
+  }
+  if (hasCardArg(a, 'command')) lines.push(en ? 'Command:' : '命令:', cardArg(a.command, en))
+  if (hasCardArg(a, 'file_path') || hasCardArg(a, 'path')) {
+    lines.push((en ? 'Path: ' : '路径: ') + cardArg(a.file_path || a.path, en))
+  }
+  if (hasCardArg(a, 'description')) lines.push((en ? 'Description: ' : '描述: ') + cardArg(a.description, en))
+  if (hasCardArg(a, 'old_string')) lines.push(en ? 'Original:' : '原文:', cardArg(a.old_string, en))
+  if (hasCardArg(a, 'new_string')) lines.push(en ? 'Replacement:' : '改成:', cardArg(a.new_string, en))
+  if (hasCardArg(a, 'content')) lines.push(en ? 'Write contents:' : '写入内容:', cardArg(a.content, en))
   const extra = en ? EXTRA_CARD_KEYS_EN : EXTRA_CARD_KEYS_ZH
   for (const pair of extra) {
-    if (a[pair[0]]) lines.push(pair[1] + ':', a[pair[0]])
+    if (hasCardArg(a, pair[0])) lines.push(pair[1] + ':', cardArg(a[pair[0]], en))
   }
   lines.push((en ? 'Model justification: ' : '模型理由: ') + (justification || none))
   if (en) lines.push('', 'Classify. Output exactly two lines:', 'Category: <id>', 'Reason: <one sentence>')
@@ -805,8 +904,9 @@ export function buildJudgePrompt(criteria, lang) {
       'Ordinary source/docs/test/build edits outside the workspace are not deletion, credential, remote, system, or bulk by themselves.',
       'If it looks like deletion, credentials, remote, system, or bulk, pick that class.',
       'Changing the auto-approve allowlist, plugin config, or other approval-gating config under ~/.dsh is approval-config, not safe.',
+      'Ordinary git push is not remote.',
       'Pick safe only when you can confirm a routine reversible operation.',
-      'If none of the above fit and you cannot confirm safety, pick other. Do not pick safe when unsure.',
+      'If neither a risk row nor safe fits, or you are unsure, pick other. Do not pick safe when unsure.',
       '',
       'Criteria:',
       ...lines,
@@ -825,8 +925,9 @@ export function buildJudgePrompt(criteria, lang) {
     '工作区外常规源码/文档/测试/构建编辑本身不算删除/凭据/远程/系统/批量。',
     '像删除/凭据/远程/系统/批量就选该类。',
     '修改 ~/.dsh 下自动审批 allowlist、插件配置或其它审批门控配置选 approval-config，不要当成 safe。',
+    '普通 git push 不要选 remote。',
     '只有能确认是常规可回补操作才选 safe。',
-    '以上都不符合且不能确认是否安全时选 other。不要因为拿不准就选 safe。',
+    '风险类和 safe 都不符合，或拿不准时选 other。不要因为拿不准就选 safe。',
     '',
     '审核表：',
     ...lines,
@@ -845,7 +946,7 @@ export function parseJudgeClassify(text, criteria) {
   const rows = Array.isArray(criteria) && criteria.length ? criteria : DEFAULT_CRITERIA
   const ids = new Set(rows.map((c) => c.id))
   const raw = String(text || '').trim()
-  if (!raw) throw new Error('审核模型输出为空')
+  if (!raw) codedThrow('err.judgeEmpty')
   const idMatch = raw.match(/(?:^|\n)\s*(?:类别|分类|category)\s*[:：]\s*([a-z0-9_-]+)/i)
   let id = idMatch ? String(idMatch[1]).toLowerCase() : ''
   if (!id || !ids.has(id)) {
@@ -856,7 +957,7 @@ export function parseJudgeClassify(text, criteria) {
     }
   }
   if (!id || !ids.has(id)) {
-    throw new Error('审核模型输出无法解析: ' + JSON.stringify(raw.slice(0, 120)))
+    codedThrow('err.judgeParse')
   }
   const reasonMatch = raw.match(/(?:^|\n)\s*(?:理由|reason)\s*[:：]\s*(.+)/i)
   const reason = reasonMatch ? String(reasonMatch[1]).trim().slice(0, 200) : ''

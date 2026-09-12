@@ -1,34 +1,17 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { forkAbortSignal, replaceRequestSignal, tryLoadJson, loadJson, appendEvent, trimEventsFile, readEventsSince } from '../src/util.mjs'
+import { pathsFor, tryLoadJson, loadJson, appendEvent, trimEventsFile, readEventsSince } from '../src/util.mjs'
 
-describe('forkAbortSignal', () => {
-  it('父中止时子跟着中止，且带上 reason', () => {
-    const parent = new AbortController()
-    const forked = forkAbortSignal(parent.signal)
-    assert.equal(forked.signal.aborted, false)
-    parent.abort('turn-cancelled')
-    assert.equal(forked.signal.aborted, true)
-    assert.equal(forked.signal.reason, 'turn-cancelled')
-  })
-
-  it('abort() 只关子 signal，不碰父', () => {
-    const parent = new AbortController()
-    const forked = forkAbortSignal(parent.signal)
-    forked.abort()
-    assert.equal(forked.signal.aborted, true)
-    assert.equal(parent.signal.aborted, false)
-  })
-
-  it('父已中止时立即中止子', () => {
-    const parent = new AbortController()
-    parent.abort('already')
-    const forked = forkAbortSignal(parent.signal)
-    assert.equal(forked.signal.aborted, true)
-    assert.equal(forked.signal.reason, 'already')
+describe('pathsFor', () => {
+  it('插件配置在 auto-approve，旧路径仅作迁移源', () => {
+    const p = pathsFor('/tmp/dsh-home')
+    assert.equal(p.pluginConfig, join('/tmp/dsh-home', 'auto-approve', 'config.json'))
+    assert.equal(p.legacyPluginConfig, join('/tmp/dsh-home', 'approval-bridge', 'config.json'))
+    assert.equal(p.allowlist, join('/tmp/dsh-home', 'auto-approve', 'allowlist.json'))
+    assert.equal('qqbot' in p, false)
   })
 })
 
@@ -62,11 +45,15 @@ describe('trimEventsFile', () => {
   })
 })
 
-describe('replaceRequestSignal', () => {
-  it('替换可写 signal', () => {
-    const req = { signal: new AbortController().signal }
-    const next = new AbortController().signal
-    assert.equal(replaceRequestSignal(req, next), true)
-    assert.equal(req.signal, next)
+describe('legacy plugin config', () => {
+  it('损坏的旧配置可读失败且不写盘', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aa-home-'))
+    const bridge = join(home, 'approval-bridge')
+    mkdirSync(bridge)
+    const legacy = join(bridge, 'config.json')
+    writeFileSync(legacy, '{broken', 'utf8')
+    const loaded = tryLoadJson(legacy)
+    assert.equal(loaded.ok, false)
+    assert.equal(readFileSync(legacy, 'utf8'), '{broken')
   })
 })

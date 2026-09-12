@@ -30,4 +30,27 @@ describe('locales', () => {
     assert.deepEqual(JSON.parse(zhM[1]), zh)
     assert.deepEqual(JSON.parse(enM[1]), en)
   })
+
+  it('path.* 都有对应 verdict.*，审核表允许不是英文 id', () => {
+    for (const key of Object.keys(zh)) {
+      if (!key.startsWith('path.')) continue
+      const verdict = 'verdict.' + key.slice(5)
+      assert.equal(zh[verdict], zh[key], verdict)
+      assert.equal(en[verdict], en[key], verdict)
+    }
+    assert.equal(zh['verdict.criteria-allow'], '审核表允许')
+    assert.notEqual(zh['verdict.criteria-allow'], 'criteria-allow')
+    assert.equal(zh['criterion.safe'], '安全/常规可回补')
+    assert.equal(zh['sandbox.danger-full-access'], '全权限')
+  })
+
+  it('取消/不可用提示与缺参错误有双语键', () => {
+    assert.match(zh['notice.cancelledTitle'], /{preview}/)
+    assert.match(en['notice.cancelledTitle'], /{preview}/)
+    assert.match(zh['notice.unavailableTitle'], /{preview}/)
+    assert.equal(zh['err.missingPayload'].includes('err.'), false)
+    assert.equal(en['err.truncatedPayload'].includes('err.'), false)
+    assert.ok(!zh['set.modeWs'].includes('workspace-write'))
+    assert.ok(!en['set.modeRo'].includes('read-only'))
+  })
 })

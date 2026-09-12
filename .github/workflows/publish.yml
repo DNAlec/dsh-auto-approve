@@ -1,4 +1,4 @@
-# Push a version tag (v0.1.0) to publish to npm.
+# Push a version tag (v0.2.0) to publish to npm.
 # Tag must match package.json "version" (without the leading v).
 #
 # One-time npmjs.com setup (Trusted Publisher, no long-lived token):
@@ -39,7 +39,6 @@ jobs:
             exit 1
           fi
 
-      - run: npm ci
       - run: npm test
       - run: npm run check
       # Do not set registry-url / NODE_AUTH_TOKEN: that .npmrc token

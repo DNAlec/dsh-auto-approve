@@ -9,6 +9,7 @@ import {
   matchKeywordBuckets,
   formatAllowKeywordHay,
   mergePluginConfig,
+  pickMigratablePluginConfig,
   AUTO_APPROVE_PRESET_YAML,
   autoApprovePresetYaml,
   normalizeAllowlist,
@@ -24,6 +25,7 @@ import {
   cloneAllowlist,
   copyAllowlistInto,
   mutateAllowlistOp,
+  fail,
   effectiveJudgeTimeoutMs,
   pickToolArgs,
   toolArgsTruncated,
@@ -101,6 +103,8 @@ describe('缺参 fail-closed', () => {
     assert.equal(hasToolPayload({ description: 'just a note' }), false)
     assert.equal(hasToolPayload({ code: 'print(1)' }), true)
     assert.equal(hasToolPayload({ url: 'https://example.com' }), true)
+    assert.equal(hasToolPayload({ query: 'foo' }), true)
+    assert.equal(hasToolPayload({ selector: '.x' }), true)
     assert.equal(hasToolPayload({}), false)
   })
 
@@ -173,6 +177,37 @@ describe('tool card', () => {
     const hay = formatKeywordHay('bash', '', { command: 'echo x', workdir: '/home/alec/.dsh/auto-approve' })
     assert.match(hay, /\.dsh\/auto-approve/)
   })
+
+  it('会话 cwd 进拒绝干草；相对路径拼上 cwd；允许干草不含 cwd', () => {
+    const cfg = normalizeAllowlist({
+      version: 18,
+      rejectKeywords: shippedRejectKeywords(),
+    })
+    const hay = formatKeywordHay('write', '', { file_path: 'allowlist.json' }, '/home/alec/.dsh/auto-approve')
+    assert.match(hay, /\.dsh\/auto-approve\/allowlist\.json/)
+    assert.equal(matchKeywordBuckets(hay, cfg).action, 'reject')
+    const allowHay = formatAllowKeywordHay({ file_path: 'allowlist.json' })
+    assert.equal(allowHay.includes('.dsh/auto-approve'), false)
+    const envHay = formatKeywordHay('write', '', { file_path: '.env' }, '/home/alec/proj')
+    assert.equal(matchKeywordBuckets(envHay, cfg).action, 'reject')
+  })
+
+  it('空写入内容仍进卡片，不从 pickToolArgs 丢掉', () => {
+    const args = pickToolArgs({ file_path: 'notes.md', content: '' })
+    assert.equal(args.content, '')
+    assert.equal(hasToolPayload(args), true)
+    const zh = formatJudgeCard('write', 'danger-full-access', '', args, '/tmp/ws')
+    assert.match(zh, /写入内容/)
+    assert.match(zh, /\(空\)/)
+    const en = formatJudgeCard('write', 'danger-full-access', '', args, '/tmp/ws', 'en')
+    assert.match(en, /Write contents:/)
+    assert.match(en, /\(empty\)/)
+    const edit = pickToolArgs({ file_path: 'a.ts', old_string: 'x', new_string: '' })
+    assert.equal(edit.new_string, '')
+    const editCard = formatJudgeCard('edit', '', '', edit, '/tmp')
+    assert.match(editCard, /改成:/)
+    assert.match(editCard, /\(空\)/)
+  })
 })
 
 describe('matchKeywordBuckets', () => {
@@ -199,13 +234,14 @@ describe('matchKeywordBuckets', () => {
 
 describe('mergePluginConfig', () => {
   it('空值回落到默认，overlay 覆盖 yaml', () => {
-    const m = mergePluginConfig({ judge: { model: 'from-yaml' } }, { notify: { chatId: 'u1' } })
+    const m = mergePluginConfig({ judge: { model: 'from-yaml' } }, { judge: { provider: 'p' } })
     assert.equal(m.judge.model, 'from-yaml')
-    assert.equal(m.notify.chatId, 'u1')
+    assert.equal(m.judge.provider, 'p')
     assert.equal(m.onlyAutoApprovePreset, true)
-    assert.equal(m.notify.timeoutSecs, 120)
     assert.equal(m.presetSandbox, 'workspace-write')
     assert.equal(m.judgePromptLang, 'zh')
+    assert.equal('notify' in m, false)
+    assert.equal('channels' in m, false)
   })
 
   it('judgePromptLang 只接受 zh/en', () => {
@@ -242,10 +278,11 @@ describe('normalizeAllowlist', () => {
     assert.ok(cfg.rejectKeywords.includes('.env'))
     assert.ok(cfg.rejectKeywords.includes('id_rsa'))
     assert.equal(cfg.humanKeywords.length, 0)
-    assert.equal(cfg.version, 17)
+    assert.equal(cfg.version, 18)
     const other = cfg.criteria.find((c) => c.id === 'other')
     const safe = cfg.criteria.find((c) => c.id === 'safe')
     assert.equal(other.action, 'human')
+    assert.equal(other.label, '其他（拿不准）')
     assert.equal(safe.action, 'allow')
   })
 
@@ -275,7 +312,7 @@ describe('normalizeAllowlist', () => {
     assert.equal(cfg.criteria.find((c) => c.id === 'other').action, 'human')
     assert.equal(cfg.criteria.find((c) => c.id === 'safe').action, 'allow')
     assert.equal(cfg.criteria.find((c) => c.id === 'deletion').action, 'reject')
-    assert.equal(cfg.version, 17)
+    assert.equal(cfg.version, 18)
   })
 
   it('v7 拿掉只对理由有意义的中文词', () => {
@@ -321,7 +358,7 @@ describe('normalizeAllowlist', () => {
     assert.equal(cfg.criteria.find((c) => c.id === 'other').action, 'human')
     assert.equal(cfg.criteria.find((c) => c.id === 'safe').action, 'allow')
     assert.equal(cfg.criteria.find((c) => c.id === 'deletion').action, 'reject')
-    assert.equal(cfg.version, 17)
+    assert.equal(cfg.version, 18)
   })
 
   it('v12 插入 approval-config 默认拒绝', () => {
@@ -338,7 +375,7 @@ describe('normalizeAllowlist', () => {
     assert.ok(ids.includes('approval-config'))
     assert.ok(ids.indexOf('approval-config') < ids.indexOf('safe'))
     assert.equal(cfg.criteria.find((c) => c.id === 'approval-config').action, 'reject')
-    assert.equal(cfg.version, 17)
+    assert.equal(cfg.version, 18)
   })
 
   it('v15 插入审批配置路径拒绝词', () => {
@@ -369,6 +406,46 @@ describe('normalizeAllowlist', () => {
     assert.ok(cfg.rejectKeywords.includes('id_rsa'))
     const hay = formatKeywordHay('write', '', { file_path: '/home/alec/proj/.env' })
     assert.equal(matchKeywordBuckets(hay, cfg).action, 'reject')
+  })
+
+  it('v18 刷出厂审核表文案，不改自定义描述和 action', () => {
+    const zh = normalizeAllowlist({
+      version: 17,
+      rejectKeywords: ['rm -rf'],
+      criteria: [
+        { id: 'remote', label: '远程系统/生产环境/数据库', description: '以实际命令为准：对远程主机/生产/数据库做写入，ssh/kubectl/云 CLI 的变更，或对外发布（publish/部署）；只读查询不算', action: 'human' },
+        { id: 'safe', label: '安全/常规可回补', description: '以命令/路径/内容为准：能确认是常规可回补操作（源码、文档、测试、构建产物、可撤销编辑）。拿不准不要选此项', action: 'allow' },
+        { id: 'other', label: '其他', description: '以上风险类都不符合，且不能确认是否安全', action: 'human' },
+      ],
+    })
+    assert.equal(zh.version, 18)
+    assert.equal(zh.criteria.find((c) => c.id === 'remote').action, 'human')
+    assert.match(zh.criteria.find((c) => c.id === 'remote').description, /普通 git push 不算/)
+    assert.equal(zh.criteria.find((c) => c.id === 'other').label, '其他（拿不准）')
+    assert.match(zh.criteria.find((c) => c.id === 'safe').description, /发包、提权、外发数据不要选/)
+
+    const en = normalizeAllowlist({
+      version: 17,
+      rejectKeywords: ['rm -rf'],
+      criteria: [
+        { id: 'remote', label: 'Remote/production/database', description: 'Based on the actual command: writes to remote hosts, production, or databases; ssh/kubectl/cloud CLI mutations; or publishing/deploying. Read-only queries do not count', action: 'reject' },
+        { id: 'other', label: 'Other', description: 'None of the risk rows apply, and safety cannot be confirmed', action: 'human' },
+      ],
+    })
+    assert.match(en.criteria.find((c) => c.id === 'remote').description, /ordinary git push do not count/)
+    assert.equal(en.criteria.find((c) => c.id === 'other').label, 'Other (unsure)')
+
+    const custom = normalizeAllowlist({
+      version: 17,
+      rejectKeywords: ['rm -rf'],
+      criteria: [
+        { id: 'safe', label: '我的安全', description: '自定义描述', action: 'allow' },
+        { id: 'other', label: '其他', description: '以上风险类都不符合，且不能确认是否安全', action: 'human' },
+      ],
+    })
+    assert.equal(custom.criteria.find((c) => c.id === 'safe').label, '我的安全')
+    assert.equal(custom.criteria.find((c) => c.id === 'safe').description, '自定义描述')
+    assert.equal(custom.criteria.find((c) => c.id === 'other').label, '其他（拿不准）')
   })
 
   it('version 已是 15 且三桶全空时仍回填含路径的出厂拒绝词', () => {
@@ -437,9 +514,11 @@ describe('shipped criteria / judge prompt lang', () => {
     assert.match(en, /Reason: <one sentence>/)
     assert.equal(en.includes('你是审批分类器'), false)
     assert.match(en, /Delete\/overwrite irreplaceable data/)
+    assert.match(en, /Ordinary git push is not remote/)
     const zh = buildJudgePrompt(cloneShippedCriteria('zh'), 'zh')
     assert.match(zh, /类别: <上面的 id>/)
     assert.match(zh, /删除\/覆盖不可再生数据/)
+    assert.match(zh, /普通 git push 不要选 remote/)
     const mixed = buildJudgePrompt(cloneShippedCriteria('zh'), 'en')
     assert.match(mixed, /Category:/)
     assert.match(mixed, /删除\/覆盖不可再生数据/)
@@ -452,6 +531,7 @@ describe('mutateAllowlistOp', () => {
     const draft = cloneAllowlist(live)
     const blocked = mutateAllowlistOp(draft, 'remove', 'criteria', 'other')
     assert.equal(blocked.ok, false)
+    assert.equal(blocked.code, 'err.criterionOtherLocked')
     const added = mutateAllowlistOp(draft, 'add', 'keywords', { text: 'only-in-draft', action: 'reject' })
     assert.equal(added.ok, true)
     assert.ok(draft.rejectKeywords.includes('only-in-draft'))
@@ -469,6 +549,69 @@ describe('mutateAllowlistOp', () => {
     assert.equal(zh.ok, true)
     assert.equal(draft.criteria.find((c) => c.id === 'safe').label, DEFAULT_CRITERIA_ZH.find((c) => c.id === 'safe').label)
     mutateAllowlistOp(draft, 'reset', 'criteria', {})
-    assert.equal(draft.criteria.find((c) => c.id === 'other').label, '其他')
+    assert.equal(draft.criteria.find((c) => c.id === 'other').label, '其他（拿不准）')
+  })
+
+  it('恢复默认拒绝词走 shippedRejectKeywords，不是 DEFAULT_DENY_KEYWORDS', () => {
+    const draft = cloneAllowlist(normalizeAllowlist({ version: 18, rejectKeywords: ['only-custom'] }))
+    draft.rejectKeywords = ['only-custom']
+    const r = mutateAllowlistOp(draft, 'reset', 'keywords', null)
+    assert.equal(r.ok, true)
+    const shipped = shippedRejectKeywords()
+    for (const w of shipped) assert.ok(draft.rejectKeywords.includes(w), w)
+    assert.equal(draft.rejectKeywords.includes('only-custom'), false)
+    assert.ok(draft.rejectKeywords.includes('.env'))
+    assert.ok(draft.rejectKeywords.includes('auto-approve/allowlist'))
+  })
+})
+
+
+describe('error codes', () => {
+  it('规则操作失败返回 code 而不是中文', () => {
+    const draft = cloneAllowlist(normalizeAllowlist({ version: 16, rejectKeywords: ['rm -rf'] }))
+    assert.equal(mutateAllowlistOp(draft, 'remove', 'criteria', 'missing').code, 'err.criterionNotFound')
+    assert.equal(mutateAllowlistOp(draft, 'add', 'keywords', { text: '' }).code, 'err.keywordEmpty')
+    assert.equal(fail('err.invalidNumber').code, 'err.invalidNumber')
+  })
+
+  it('审核解析失败抛带 code 的错误', () => {
+    try {
+      parseJudgeClassify('', DEFAULT_CRITERIA)
+      assert.fail('should throw')
+    } catch (e) {
+      assert.equal(e.code, 'err.judgeEmpty')
+    }
+    try {
+      parseJudgeClassify('no category here', DEFAULT_CRITERIA)
+      assert.fail('should throw')
+    } catch (e) {
+      assert.equal(e.code, 'err.judgeParse')
+    }
+  })
+})
+describe('pickMigratablePluginConfig', () => {
+  it('只抽出判定字段，丢掉 notify / channels', () => {
+    const picked = pickMigratablePluginConfig({
+      onlyAutoApprovePreset: false,
+      presetSandbox: 'read-only',
+      judgePromptLang: 'en',
+      judge: { provider: 'p', model: 'm', reasoningEffort: 'off', timeoutMs: 9000 },
+      notify: { enabled: true, chatId: 'u1' },
+      channels: { qqbot: { enabled: true, chatId: 'u1' } },
+    })
+    assert.equal(picked.onlyAutoApprovePreset, false)
+    assert.equal(picked.presetSandbox, 'read-only')
+    assert.equal(picked.judgePromptLang, 'en')
+    assert.equal(picked.judge.model, 'm')
+    assert.equal('notify' in picked, false)
+    assert.equal('channels' in picked, false)
+    const merged = mergePluginConfig({}, picked)
+    assert.equal(merged.judge.timeoutMs, 9000)
+    assert.equal('notify' in merged, false)
+  })
+
+  it('空对象或非对象返回 null', () => {
+    assert.equal(pickMigratablePluginConfig(null), null)
+    assert.equal(pickMigratablePluginConfig({ notify: { chatId: 'u1' } }), null)
   })
 })

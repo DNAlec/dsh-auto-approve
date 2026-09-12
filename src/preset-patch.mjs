@@ -110,7 +110,7 @@ export function ensureAutoApprovePreset(patchPath, sandbox = 'workspace-write') 
       if (i > permIdx && /^- /.test(lines[i]) && !/^ {2,}- /.test(lines[i])) break
     }
     if (presetsIdx === -1) {
-      return { ok: false, status: 'no-presets-key', needRestart: false, error: 'permission 条目缺少 presets 键，请手动添加' }
+      return { ok: false, status: 'no-presets-key', needRestart: false, code: 'err.noPresetsKey' }
     }
     let insertAt = presetsIdx
     for (let i = presetsIdx + 1; i < lines.length; i++) {
@@ -123,7 +123,7 @@ export function ensureAutoApprovePreset(patchPath, sandbox = 'workspace-write') 
     writeFileSync(patchPath, lines.join('\n'), 'utf8')
     return { ok: true, status: 'added-preset', needRestart: true }
   } catch (e) {
-    return { ok: false, status: 'error', needRestart: false, error: String((e && e.message) || e) }
+    return { ok: false, status: 'error', needRestart: false, code: 'err.preset', details: { error: String((e && e.message) || e) } }
   }
 }
 
@@ -141,7 +141,7 @@ export function setAutoApproveSandbox(patchPath, sandbox) {
     writeFileSync(patchPath, replaced.text, 'utf8')
     return { ok: true, status: 'updated', needRestart: true, sandbox: mode }
   } catch (e) {
-    return { ok: false, status: 'error', needRestart: false, sandbox: mode, error: String((e && e.message) || e) }
+    return { ok: false, status: 'error', needRestart: false, sandbox: mode, code: 'err.preset', details: { error: String((e && e.message) || e) } }
   }
 }
 

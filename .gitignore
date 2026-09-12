@@ -5,7 +5,6 @@ coverage/
 *.tgz
 .env
 .env.*
-qqbot.json
 allowlist.json
 config.json
 events.jsonl
