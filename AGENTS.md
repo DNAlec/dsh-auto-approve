@@ -30,7 +30,6 @@ Host API 以 DSH 源码为准：`/home/alec/deepseek-harness/`（审批 / 预设
 
 ## 结构
 
-
 ```
 src/index.mjs         宿主：approval/request、RPC、审计
 src/rules.mjs         管道纯函数
@@ -39,6 +38,7 @@ src/util.mjs          路径与 JSON / 审计
 client.js             绿/橙条、审批 tab、设置页
 locales.mjs           Client zh/en 字典（键集以 zh 为准）
 ```
+
 Host `inject`：`approval`、`permissionPresets`、`llm`、`timer`、`webServer`。RPC 用 `ctx.inject(['connection'], …)` + `connection.fetch.register({ path: '/api/dsh-auto-approve' })`。禁止 `rpc.handle`（它会在 connection 自己的 ctx 上碰 `webServer`）。
 Client 插件 `inject`：`connection`、`slots`、`locale`；`rpc.call('/api', 'dsh-auto-approve', { endpoint, payload })`。
 `package.json` 的 `dsh.client.inject` 是打包时声明依赖的其它 client 包（connection / locale / settings-general），不是本插件 `apply` 的 inject 列表。
