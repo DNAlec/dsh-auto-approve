@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0
+
+> 这一版把「什么交给关键词、什么交给审核模型」重新划了一遍：**审核表只留 id + 说明**（`label` 取消，`other` 成为内容不可改的结构行），**出厂关键词表从 66 条精简到 27 条**（只留零上下文就确定灾难的红线，其余交给审核模型按各行说明判），**提示词语言改成在「恢复默认」时选**。
+> **升级提示**：① 老文件里已有的关键词不会被自动删掉（迁移不删用户手写的词），想用新出厂表请在设置页点一次「恢复默认关键词」；② 审核表的 `label` 字段会在下一次写盘时自动消失（旧 label 落进说明，行不会变得不可归类）；③ `other` 的说明从这一版起固定不可改，动作仍可改。
+
+### 行为变化
+
+- **审核表一行 = 英文 `id` + `description`（什么情况下选这个 id）+ `action`，没有 label**。送审文本变成 `- deletion：…`，模型只输出 `类别: <id>` + 理由，动作仍由程序按表执行；审批历史、设置页、决策事件一律显示 id（客户端删掉 `criterion.*` 文案与 `criterionLabel` 回落）。**说明成为必需字段**：新增行或把说明改空都会被拒（`err.criterionNeedDesc`）；id 必须是英文小写 slug，中文/非法字符报 `err.criterionNeedId`。
+- **`other` 是结构行**：不可删除、**说明不可改**（`err.criterionOtherFixed`，设置页只读展示），只有动作能改。理由：关键词表缩小后「拿不准 → 转人工」是主要安全网，而框架只能靠这一行的说明指认它（不点名 id、也没有占位符），文案必须由插件保证。
+- **关键词表只留三类确定性红线（27 条）**：① 清根 `rm -rf /`（写法同时覆盖 `rm -rf /*`、`sudo rm -rf /`）；② 裸设备覆写/格式化（`of=/dev/` 一条前缀词 + 伪设备例外、`mkfs`、`wipefs`、`Format-Volume`、`Clear-Disk`、`diskutil eraseDisk`）；③ 门控自身配置（`auto-approve/allowlist`、`auto-approve/config.json`、`.dsh/auto-approve`、`.dsh/profiles`、`.dsh/config.yml`、`cordis.patch.yml`）与私钥/云端凭据（`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`、`.pem`/`.p12`/`.pfx`/`.jks`、`authorized_keys`、`.netrc`、`.git-credentials`、`.pypirc`、`~/.aws/credentials`、`~/.kube/config`）。
+- **其余一律交给审核模型**（都记进 `RETIRED_DEFAULT_KEYWORDS` 留档）：递归删除家族（`rm -rf`、`rm -fr`、`sudo rm`、`Remove-Item -Recurse -Force`、`rd /s /q`、`del /f /s /q`）、`chmod 777 /`、`chmod -R 777`、`git push --force`/`-f`、`drop table`/`drop database`/`delete from`/`truncate table`、`terraform destroy`、`docker volume rm`/`prune`、`docker system prune`、关机重启，以及 `.env`/`.npmrc`/`docker config.json` 这类工具会自己改写的凭据文件。判断标准：需要看分支、看目录、看 SQL 语句、看会话状态才能判危险的一律不给词表。**人工桶默认留空**（机制保留，用户可自己加词）。
+- **提示词语言没有独立开关**：在「恢复中文/英文默认审核表」「恢复中文/英文默认提示词」时选，选中同时决定框架、卡片文案与理由语言（Host 在 `rule-op` 成功后同步落 `pluginCfg.judgePromptLang` 并写 config，写盘失败回滚内存值）。恢复默认审核表只换表、不动自定义提示词；**保存审核模型/超时不再携带 `judgePromptLang`**，避免把语言写回旧值。
+- allowlist 版本 18 → 19；迁移允许丢结构字段（`label`），但仍不静默删除用户手写的关键词、不覆盖用户改过的说明。
+
+### 审核表与提示词
+
+- **8 行说明重写**成「什么情况下选它（看哪个字段）；什么不算」的统一句式：`bulk` 明确排除可再生成的依赖/构建/缓存/临时目录，`system` 补用户与权限管理（含放宽到 777），`deletion` 补清空/截断/覆盖写，`remote` 补强制推送、破坏性 SQL、云资源删除，`safe` 补清日志/缓存/临时目录。
+- **本地/临时开发库的信号写进三行**（`deletion`/`remote`/`safe`）：能确认是 `sqlite3 dev.db`、一次性测试库的常规改动不算；`remote` 保留「连接目标不明确时仍按本行判」，`psql $PROD_URL -c "drop table"` 这类不透明目标仍拒绝，拿不准落 `other` 转人工。
+- **框架补两条安全网**：一条命令有多段（管道 / `&&` / `;`）时按其中最不可回补的一段归类；多行都像时选后果更不可回补、更贴说明的一行。
+- **围栏与解析加固**：卡片正文里的 `TOOL_CARD` 中和成 `TOOL-CARD`（内容自带的 `TOOL_CARD>>>` 曾能把注入文本顶到围栏外）；输出格式只规定一次并要求纯文本（不要加粗/引号/代码块/JSON）；解析容忍行首/值两侧的 markdown 装饰与「整段就是一个表格 id」的裸 id（JSON 与散文仍只走模糊兜底）；模糊兜底跳过 `other` 与 allow 行，落点只可能是 reject/human；理由按框架语言输出。
+- **框架与审核表解耦**：不点名出厂 id、不引用任何出厂说明文案（含意译）、不写死卡片字段清单（改为「卡片里除模型理由和描述外的字段都是操作本身」，覆盖 URL/code/SQL 等额外字段）；送审文本不出现「关键词 / keyword layer / err.*」这类插件内部词汇（有用例锁住）。
+
+### Fixes
+
+- **升级不退回旧误伤**：出厂已下架的 `.env` / `push --force` 的例外条目继续生效（迁移不删用户关键词），`git push --force-with-lease`、`cat .env.example` 不再被硬拒。
+- **关键词漏判**：`dd if=/dev/zero of=/dev/sda` 这类 `if=` 在前的常规写法以前整条漏判，改用 `PREFIX_MATCH_KEYWORDS`（只要求词首边界），一条 `of=/dev/` 覆盖全部块设备前缀，`of=/dev/null` 不误伤。
+- **`bulk` 不再一刀切**：`dd` 只指「向块设备写」，容器清理只点名销毁数据卷的形态（`docker volume rm/prune`、`docker system prune --volumes`），写镜像/备份与裸 prune 交回模型。
+- **门控自身兜底补全**：`auto-approve/config.json`（自定义 `DSH_HOME` 时 `.dsh/auto-approve` 匹配不到）。
+- **文档对齐**：README 中英审核表按实际出厂包重写；设置页提示同步结构行语义；`approval-config` 说明不再钉死 `~/.dsh`。
+
+### 工程
+
+- 新增用例：围栏中和与注入、交接覆盖（关键词删词不能删能力）、老用户下架词例外、`other` 锁定但动作可改、本地开发库三行信号、送审文本不泄露内部机制、两条安全网文案；`npm test` 154 通过、`npm run check` 通过。
+
 ## 0.2.1
 
 > 如果你用 0.2.0 装过、且 profile patch 还是出厂模板（注释 + `[]`），请升级：0.2.0 会把预设块追加在 `[]` 之后，写出 DSH 解析不了的 YAML，下次 `dsh web` 起不来。

@@ -40,7 +40,8 @@ describe('locales', () => {
     }
     assert.equal(zh['verdict.criteria-allow'], '审核表允许')
     assert.notEqual(zh['verdict.criteria-allow'], 'criteria-allow')
-    assert.equal(zh['criterion.safe'], '安全/常规可回补')
+    assert.equal(zh['criterion.safe'], undefined, '审核表 label 已取消，客户端不再有 criterion.* 文案')
+    assert.ok(zh['err.criterionNeedDesc'] && en['err.criterionNeedDesc'])
     assert.equal(zh['sandbox.danger-full-access'], '全权限')
   })
 

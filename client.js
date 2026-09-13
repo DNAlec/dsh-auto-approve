@@ -107,6 +107,7 @@ window.__ModuleLoader__.load({
 .ab-set-crit-top{display:flex;align-items:center;gap:8px;min-width:0}
 .ab-set-item-fields{min-width:0;flex-direction:column;gap:6px;display:flex}
 .ab-set-item-id{flex:1 1 auto;min-width:0;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px;font-family:var(--ds-font-family-code)}
+.ab-set-crit-fixed{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px}
 .ab-set-item-meta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;white-space:nowrap}
 .ab-set-item-del{flex:none;width:24px;height:24px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:transparent;border:none;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;padding:0}
 .ab-set-item-del:hover{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
@@ -142,8 +143,8 @@ window.__ModuleLoader__.load({
 `
 
     const NS = "dsh-auto-approve"
-    const ZH = JSON.parse(String.raw`{"slot.notice":"自动放行提示","slot.history":"审批","slot.settings":"自动审批","action.reject":"拒绝","action.allow":"允许","action.human":"人工","criterion.deletion":"删除/覆盖不可再生数据","criterion.credential":"凭据/密钥/授权修改","criterion.remote":"远程系统/生产环境/数据库","criterion.system":"系统级路径/配置","criterion.bulk":"批量不可回补操作","criterion.approval-config":"自动审批配置","criterion.safe":"安全/常规可回补","criterion.other":"其他（拿不准）","sandbox.read-only":"只读","sandbox.workspace-write":"工作区可写","sandbox.danger-full-access":"全权限","source.web":"网页","verdict.keyword-allow":"关键词允许","verdict.keyword-reject":"关键词拒绝","verdict.keyword-human":"关键词转人工","verdict.criteria-reject":"审核表拒绝","verdict.criteria-allow":"审核表允许","verdict.criteria-human":"审核表转人工","verdict.judge-failed":"判定失败转人工","verdict.missing-payload":"缺少工具参数转人工","verdict.truncated-payload":"参数过长转人工","verdict.plugin-error":"插件异常转人工","verdict.human":"转人工","verdict.cancelled":"人工取消","verdict.unavailable":"审批不可用","path.keyword-reject":"关键词拒绝","path.keyword-allow":"关键词允许","path.keyword-human":"关键词转人工","path.criteria-reject":"审核表拒绝","path.criteria-allow":"审核表允许","path.criteria-human":"审核表转人工","path.judge-failed":"判定失败转人工","path.missing-payload":"缺少工具参数转人工","path.truncated-payload":"参数过长转人工","path.plugin-error":"插件异常转人工","notice.feedError":"审批提示暂时不可用","notice.feedErrorTag":"连接失败","notice.pendingTitle":"等待人工审批：{preview}","notice.pendingTag":"人工审批中","notice.webApproved":"人工审批通过：{preview}","notice.webApprovedTag":"人工审批通过","notice.rejectedTitle":"已拒绝：{preview}","notice.rejectedTag":"已拒绝","notice.cancelledTitle":"已取消人工审批：{preview}","notice.unavailableTitle":"审批不可用：{preview}","notice.autoTag":"自动放行 · {verdict}","notice.autoDefault":"自动放行","notice.rejectedDefault":"已拒绝","notice.hint":"提示","notice.close":"关闭","notice.feedLoadFailed":"审批提示加载失败，将自动重试","history.noSession":"未选择会话","history.loadFailed":"加载失败：{error}","history.loading":"加载中…","history.title":"审批","history.emptySub":"当前会话还没有审批记录","history.emptyHint":"自动放行与转人工都会出现在这里","history.sub":"最新在上 · 点开看命令与详情","history.tagAuto":"自动放行","history.tagPending":"转人工","history.tagAllow":"人工批准","history.tagReject":"人工拒绝","history.tagCancel":"人工取消","history.tagUnavailable":"审批不可用","history.unknownTool":"工具","detail.request":"请求","detail.audit":"审核","detail.command":"命令","detail.path":"路径","detail.description":"描述","detail.old":"原文","detail.new":"改成","detail.content":"写入内容","detail.code":"代码","detail.url":"URL","detail.query":"查询","detail.script":"脚本","detail.sql":"SQL","detail.prompt":"提示词","detail.input":"输入","detail.text":"文本","detail.body":"正文","detail.message":"消息","detail.pattern":"模式","detail.selector":"选择器","detail.cwd":"工作目录","detail.workdir":"命令工作目录","detail.empty":"(空)","detail.sandbox":"沙箱","detail.justification":"模型理由","detail.pipe":"管道","detail.keyword":"关键词","detail.judgeModel":"审核模型","detail.judgeCategory":"审核类别","detail.judgeAction":"执行动作","detail.judgeReason":"审核理由","detail.judgeError":"审核失败","detail.judgeRaw":"审核结果原文","detail.source":"来源","detail.judgeFailed":"未完成（解析失败/超时转人工，不执行「其他」的动作）","set.title":"自动审批","set.intro":"需要审批的行为由审核模型自动判定。允许或拒绝与在网页点按钮相同；拿不准则交给原来的人工审批框。","set.allowlistCorrupt":"规则文件损坏，当前是内存默认，普通保存不会覆盖磁盘。请修好 allowlist.json，或点「恢复默认」写回出厂规则。","set.pluginCorrupt":"插件配置损坏，拒绝保存以免清空审核模型。请修好 ~/.dsh/auto-approve/config.json，或","set.pluginCorruptOverwrite":"覆盖损坏配置","set.loading":"加载中…","set.loadFailed":"加载失败：{error}","set.resetConfirm":"再点一次确认恢复","set.presetMissingTitle":"权限预设","set.driftTitle":"权限预设表需要更新","set.driftBody":"DSH 出厂权限预设表多了 {keys}。本 profile 的 permission 行由本插件写入，patch 会整块替换 config，所以不会自动出现这些预设；请更新插件或手工合并该行。","set.presetMissingSub":"插件启动时会写入 auto-approve。当前未检测到，可手动补写。","set.presetWrite":"写入权限预设","set.presetWriteNote":"写入后需重启 dsh web","set.presetWrote":"已写入，请重启 dsh web","set.modeTitle":"自动审批模式","set.modeWs":"工作区可写（推荐）","set.modeWsHint":"工作区内直接放行，越出工作区需审核。","set.modeRo":"只读","set.modeRoHint":"工作区内写操作也需审核。","set.modeHint":"点选即写入。改完需重启 dsh web，并重新选择「自动审批」或开新会话。","set.save":"保存","set.hotOk":"已生效（热更新，无需重启）","set.modeSaved":"已写入。请重启 dsh web，并重新选择「自动审批」或开新会话","set.overview":"审批总览","set.overviewSub":"关键词（拒绝优先于人工优先于允许）→ 审核表由模型归类，程序按表执行。解析失败转人工。","set.stepKeywords":"关键词","set.stepCriteria":"审核表","set.stepJudge":"审核模型","set.counts":"拒 {reject} · 人 {human} · 允 {allow}","set.criteriaCount":"{n} 项","set.followDefault":"跟随默认","set.unconfigured":"未配置","set.kwSub":"匹配命令、路径和工作目录。拒绝/人工词也匹配工具名；允许词不匹配工具名，避免把 bash/write 整类放行。","set.empty":"暂无","set.presetTag":"预置","set.kwEditTitle":"点击修改","set.kwPlaceholder":"新关键词","set.add":"添加","set.resetKeywords":"恢复默认关键词","set.resetKeywordsOk":"已恢复默认关键词","set.confirm":"确认","set.delete":"删除","set.criteriaSub":"审核模型以此表作为审核标准。「其他」作为兜底选项不能删除。","set.labelPlaceholder":"标签","set.descPlaceholder":"说明（写入审核提示词）","set.resetCriteria":"恢复默认审核表（{lang}）","set.resetCriteriaOk":"已恢复为{lang}默认审核表","set.addCriterion":"添加审核项","set.criterionId":"id","set.judgeTitle":"审核模型","set.judgeSubLead":"独立于当前会话模型。空则跟随部署默认","set.judgeSubFallback":"（{provider} / {model}）","set.judgeSubNoFallback":"（当前没有默认可跟随）","set.judgeSubTail":"。没有可用路由时当次转人工，不会再猜一个模型。建议思考强度 off。","set.followProvider":"跟随默认提供方","set.followModel":"跟随默认模型","set.modelDefaultEffort":"模型默认","set.effortOff":"off（建议）","set.judgeTimeoutMs":"审核超时(ms)：","set.judgeSaved":"审核设置已保存","set.judgeLang":"提示词语言","set.judgeLangZh":"中文","set.judgeLangEn":"English","set.judgeLangHint":"切换发给审核模型的框架语言与卡片标签，不会改当前审核表。下面的提示词按此语言编辑；恢复默认审核表也用这里选的语言。","set.judgePrompt":"审核提示词","set.judgePromptHint":"按所选语言内置默认提示词。用 {{criteria}} 插入当前审核表；删掉占位符时会把审核表附在末尾。与审核模型、超时一起保存。","set.judgePromptCustom":"已自定义","set.judgePromptDefault":"默认","set.resetJudgePrompt":"恢复默认提示词","set.resetJudgePromptOk":"已恢复默认提示词","set.overwriteOk":"已覆盖损坏的插件配置","err.missingPayload":"工具参数不完整，转人工","err.missingPayloadUncaptured":"未捕获工具参数，转人工","err.truncatedPayload":"工具参数过长已截断，转人工（禁止按前缀自动放行）","err.pluginError":"插件判定异常，转人工","err.allowlistCorrupt":"规则文件损坏，拒绝覆盖。请先「恢复默认」写回出厂规则，或修好磁盘上的 allowlist.json","err.allowlistWrite":"写入 allowlist 失败","err.criterionNotFound":"未找到该审核项","err.criterionNeedId":"需要 id 或 label","err.criterionIdExists":"id 已存在","err.criterionOtherLocked":"「其他」不可删除","err.criteriaOp":"审核表请用添加 / 修改 / 删除 / 恢复默认","err.opMustSet":"{kind} 只能用修改操作","err.invalidNumber":"无效数值","err.keywordEmpty":"关键词不能为空","err.keywordNotFound":"未找到该关键词","err.keywordsOp":"关键词请用添加 / 修改 / 删除 / 恢复默认","err.valueEmpty":"值不能为空","err.unknownKind":"未知规则类型：{kind}","err.unknownOp":"未知操作：{op}","err.ruleNotFound":"未找到匹配的规则","err.badBody":"请求体不是 JSON","err.needSessionId":"需要 sessionId","err.pluginCorrupt":"插件配置损坏，拒绝覆盖。请修好磁盘文件，或点「覆盖损坏配置」","err.pluginWrite":"写入配置失败","err.unknownEndpoint":"未知接口：{endpoint}","err.internal":"内部错误：{error}","err.catalog":"无法列出模型：{error}","err.info":"无法读取模型信息：{error}","err.judgeUnconfigured":"未配置审核模型","err.judgeEffort":"思考强度 {effort} 不受支持","err.judgeTimeout":"审核超时（{ms}ms）","err.judgeRetryTimeout":"审核重试超时（{ms}ms）","err.judgeFailed":"审核失败","err.judgeCall":"审核模型调用失败：{error}","err.judgeEmpty":"审核模型输出为空","err.judgeParse":"审核模型输出无法解析","err.judgeUpstream":"审核模型路由失败：{error}","err.noPresetsKey":"permission 条目缺少 presets 键，请手动添加","err.preset":"写入预设失败：{error}","err.presetSandboxMissing":"预设里没有 sandbox 行，无法写入沙箱模式；请检查 profile 的 cordis.patch.yml","rpc.unavailable":"connection.rpc 不可用","rpc.failed":"RPC 失败"}`)
-    const EN = JSON.parse(String.raw`{"slot.notice":"Auto-approve notice","slot.history":"Approvals","slot.settings":"Auto-approve","action.reject":"Reject","action.allow":"Allow","action.human":"Human","criterion.deletion":"Delete/overwrite irreplaceable data","criterion.credential":"Credentials/keys/auth changes","criterion.remote":"Remote/production/database","criterion.system":"System paths/config","criterion.bulk":"Bulk irreversible operations","criterion.approval-config":"Auto-approve configuration","criterion.safe":"Safe/routine reversible","criterion.other":"Other (unsure)","sandbox.read-only":"Read-only","sandbox.workspace-write":"Workspace write","sandbox.danger-full-access":"Full access","source.web":"Web","verdict.keyword-allow":"Keyword allow","verdict.keyword-reject":"Keyword reject","verdict.keyword-human":"Keyword → human","verdict.criteria-reject":"Criteria reject","verdict.criteria-allow":"Criteria allow","verdict.criteria-human":"Criteria → human","verdict.judge-failed":"Judge failed → human","verdict.missing-payload":"Missing tool args → human","verdict.truncated-payload":"Truncated args → human","verdict.plugin-error":"Plugin error → human","verdict.human":"To human","verdict.cancelled":"Human cancel","verdict.unavailable":"Unavailable","path.keyword-reject":"Keyword reject","path.keyword-allow":"Keyword allow","path.keyword-human":"Keyword → human","path.criteria-reject":"Criteria reject","path.criteria-allow":"Criteria allow","path.criteria-human":"Criteria → human","path.judge-failed":"Judge failed → human","path.missing-payload":"Missing tool args → human","path.truncated-payload":"Truncated args → human","path.plugin-error":"Plugin error → human","notice.feedError":"Approval notices unavailable","notice.feedErrorTag":"Connection failed","notice.pendingTitle":"Waiting for human: {preview}","notice.pendingTag":"Human review","notice.webApproved":"Approved: {preview}","notice.webApprovedTag":"Approved","notice.rejectedTitle":"Rejected: {preview}","notice.rejectedTag":"Rejected","notice.cancelledTitle":"Cancelled: {preview}","notice.unavailableTitle":"Unavailable: {preview}","notice.autoTag":"Auto-allowed · {verdict}","notice.autoDefault":"Auto-allowed","notice.rejectedDefault":"Rejected","notice.hint":"Notice","notice.close":"Dismiss","notice.feedLoadFailed":"Approval notices failed to load; retrying","history.noSession":"No session selected","history.loadFailed":"Failed to load: {error}","history.loading":"Loading…","history.title":"Approvals","history.emptySub":"This session has no approval records yet","history.emptyHint":"Auto-allows and human escalations appear here","history.sub":"Newest first · expand for command and details","history.tagAuto":"Auto-allowed","history.tagPending":"To human","history.tagAllow":"Human allow","history.tagReject":"Human reject","history.tagCancel":"Human cancel","history.tagUnavailable":"Unavailable","history.unknownTool":"Tool","detail.request":"Request","detail.audit":"Review","detail.command":"Command","detail.path":"Path","detail.description":"Description","detail.old":"Original","detail.new":"Replacement","detail.content":"Write contents","detail.code":"Code","detail.url":"URL","detail.query":"Query","detail.script":"Script","detail.sql":"SQL","detail.prompt":"Prompt","detail.input":"Input","detail.text":"Text","detail.body":"Body","detail.message":"Message","detail.pattern":"Pattern","detail.selector":"Selector","detail.cwd":"Working directory","detail.workdir":"Command working directory","detail.empty":"(empty)","detail.sandbox":"Sandbox","detail.justification":"Model justification","detail.pipe":"Pipeline","detail.keyword":"Keyword","detail.judgeModel":"Judge model","detail.judgeCategory":"Category","detail.judgeAction":"Action","detail.judgeReason":"Judge reason","detail.judgeError":"Judge error","detail.judgeRaw":"Judge raw output","detail.source":"Source","detail.judgeFailed":"Incomplete (parse failure/timeout → human; does not run Other)","set.title":"Auto-approve","set.intro":"Actions that need approval are judged automatically. Allow and reject match clicking the Web buttons; uncertainty goes to the original human dialog.","set.allowlistCorrupt":"The rules file is corrupt. This process is using in-memory defaults and will not overwrite the disk. Repair allowlist.json, or Restore defaults to write shipped rules.","set.pluginCorrupt":"Plugin config is corrupt; saves are refused so the judge model is not wiped. Repair ~/.dsh/auto-approve/config.json, or ","set.pluginCorruptOverwrite":"Overwrite corrupt config","set.loading":"Loading…","set.loadFailed":"Failed to load: {error}","set.resetConfirm":"Click again to confirm restore","set.presetMissingTitle":"Permission preset","set.driftTitle":"Permission preset table needs updating","set.driftBody":"The shipped permission table has new presets: {keys}. This profile's permission row is written by this plugin, and a patch replaces that config wholesale, so they will not appear automatically. Update the plugin or merge that row by hand.","set.presetMissingSub":"Startup writes auto-approve. It was not detected; you can write it now.","set.presetWrite":"Write permission preset","set.presetWriteNote":"Restart dsh web after writing","set.presetWrote":"Written. Restart dsh web","set.modeTitle":"Auto-approve mode","set.modeWs":"Workspace write (recommended)","set.modeWsHint":"In-workspace writes skip approval; outside the workspace still goes through the judge.","set.modeRo":"Read-only","set.modeRoHint":"In-workspace writes also go through the judge.","set.modeHint":"Clicking a mode writes it. Then restart dsh web and re-select Auto-approve or start a new session.","set.save":"Save","set.hotOk":"Applied (live; no restart)","set.modeSaved":"Written. Restart dsh web and re-select Auto-approve or start a new session","set.overview":"Approval overview","set.overviewSub":"Keywords (reject > human > allow) → the judge classifies; the table decides. Parse failure → human.","set.stepKeywords":"Keywords","set.stepCriteria":"Criteria","set.stepJudge":"Judge model","set.counts":"rej {reject} · hum {human} · all {allow}","set.criteriaCount":"{n} rows","set.followDefault":"Follow default","set.unconfigured":"Not configured","set.kwSub":"Match command, path, and workdir. Reject/human also match the tool name; allow keywords do not, so bash/write is not allowed as a class.","set.empty":"None","set.presetTag":"Shipped","set.kwEditTitle":"Click to edit","set.kwPlaceholder":"New keyword","set.add":"Add","set.resetKeywords":"Restore default keywords","set.resetKeywordsOk":"Default keywords restored","set.confirm":"Confirm","set.delete":"Delete","set.criteriaSub":"The judge uses this table. Other cannot be deleted.","set.labelPlaceholder":"Label","set.descPlaceholder":"Description (goes into the judge prompt)","set.resetCriteria":"Restore default criteria ({lang})","set.resetCriteriaOk":"Restored {lang} default criteria","set.addCriterion":"Add criterion","set.criterionId":"id","set.judgeTitle":"Judge model","set.judgeSubLead":"Independent of the session model. Empty follows the deployment default","set.judgeSubFallback":" ({provider} / {model})","set.judgeSubNoFallback":" (no default to follow)","set.judgeSubTail":". With no usable route, that request goes to a human; the plugin will not guess a model. Prefer effort off.","set.followProvider":"Follow default provider","set.followModel":"Follow default model","set.modelDefaultEffort":"Model default","set.effortOff":"off (recommended)","set.judgeTimeoutMs":"Judge timeout (ms):","set.judgeSaved":"Judge settings saved","set.judgeLang":"Prompt language","set.judgeLangZh":"Chinese","set.judgeLangEn":"English","set.judgeLangHint":"Switches the judge prompt framework and card labels, not the current criteria table. The prompt below is edited per language; restore default criteria also uses this language.","set.judgePrompt":"Judge prompt","set.judgePromptHint":"Built-in default for the selected language. Use {{criteria}} to insert the current criteria table; if the placeholder is removed, the table is appended. Saved with the judge model and timeout.","set.judgePromptCustom":"Custom","set.judgePromptDefault":"Default","set.resetJudgePrompt":"Restore default prompt","set.resetJudgePromptOk":"Default prompt restored","set.overwriteOk":"Corrupt plugin config overwritten","err.missingPayload":"Tool arguments are incomplete; sending to human","err.missingPayloadUncaptured":"Tool arguments were not captured; sending to human","err.truncatedPayload":"Tool arguments were truncated; sending to human (no prefix auto-allow)","err.pluginError":"Plugin error; sending to human","err.allowlistCorrupt":"Rules file is corrupt; refusing to overwrite. Restore defaults or fix allowlist.json on disk.","err.allowlistWrite":"Failed to write allowlist","err.criterionNotFound":"Criterion not found","err.criterionNeedId":"id or label is required","err.criterionIdExists":"id already exists","err.criterionOtherLocked":"“Other” cannot be deleted","err.criteriaOp":"Criteria accept add / set / remove / reset","err.opMustSet":"{kind} only accepts set","err.invalidNumber":"Invalid number","err.keywordEmpty":"Keyword cannot be empty","err.keywordNotFound":"Keyword not found","err.keywordsOp":"Keywords accept add / set / remove / reset","err.valueEmpty":"Value cannot be empty","err.unknownKind":"Unknown rule kind: {kind}","err.unknownOp":"Unknown operation: {op}","err.ruleNotFound":"No matching rule","err.badBody":"Request body is not JSON","err.needSessionId":"sessionId is required","err.pluginCorrupt":"Plugin config is corrupt; refusing to overwrite. Fix the file on disk, or overwrite the corrupt config.","err.pluginWrite":"Failed to write plugin config","err.unknownEndpoint":"Unknown endpoint: {endpoint}","err.internal":"Internal error: {error}","err.catalog":"Could not list models: {error}","err.info":"Could not load model info: {error}","err.judgeUnconfigured":"Judge model is not configured","err.judgeEffort":"reasoningEffort {effort} is not supported","err.judgeTimeout":"Judge timed out ({ms}ms)","err.judgeRetryTimeout":"Judge retry timed out ({ms}ms)","err.judgeFailed":"Judge failed","err.judgeCall":"Judge call failed: {error}","err.judgeEmpty":"Judge output was empty","err.judgeParse":"Judge output could not be parsed","err.judgeUpstream":"Judge route failed: {error}","err.noPresetsKey":"The permission entry has no presets key; add it manually","err.preset":"Failed to write preset: {error}","err.presetSandboxMissing":"The preset has no sandbox line; cannot set the sandbox mode. Check the profile cordis.patch.yml","rpc.unavailable":"connection.rpc is unavailable","rpc.failed":"RPC failed"}`)
+    const ZH = JSON.parse(String.raw`{"slot.notice":"自动放行提示","slot.history":"审批","slot.settings":"自动审批","action.reject":"拒绝","action.allow":"允许","action.human":"人工","sandbox.read-only":"只读","sandbox.workspace-write":"工作区可写","sandbox.danger-full-access":"全权限","source.web":"网页","verdict.keyword-allow":"关键词允许","verdict.keyword-reject":"关键词拒绝","verdict.keyword-human":"关键词转人工","verdict.criteria-reject":"审核表拒绝","verdict.criteria-allow":"审核表允许","verdict.criteria-human":"审核表转人工","verdict.judge-failed":"判定失败转人工","verdict.missing-payload":"缺少工具参数转人工","verdict.truncated-payload":"参数过长转人工","verdict.plugin-error":"插件异常转人工","verdict.human":"转人工","verdict.cancelled":"人工取消","verdict.unavailable":"审批不可用","path.keyword-reject":"关键词拒绝","path.keyword-allow":"关键词允许","path.keyword-human":"关键词转人工","path.criteria-reject":"审核表拒绝","path.criteria-allow":"审核表允许","path.criteria-human":"审核表转人工","path.judge-failed":"判定失败转人工","path.missing-payload":"缺少工具参数转人工","path.truncated-payload":"参数过长转人工","path.plugin-error":"插件异常转人工","notice.feedError":"审批提示暂时不可用","notice.feedErrorTag":"连接失败","notice.pendingTitle":"等待人工审批：{preview}","notice.pendingTag":"人工审批中","notice.webApproved":"人工审批通过：{preview}","notice.webApprovedTag":"人工审批通过","notice.rejectedTitle":"已拒绝：{preview}","notice.rejectedTag":"已拒绝","notice.cancelledTitle":"已取消人工审批：{preview}","notice.unavailableTitle":"审批不可用：{preview}","notice.autoTag":"自动放行 · {verdict}","notice.autoDefault":"自动放行","notice.rejectedDefault":"已拒绝","notice.hint":"提示","notice.close":"关闭","notice.feedLoadFailed":"审批提示加载失败，将自动重试","history.noSession":"未选择会话","history.loadFailed":"加载失败：{error}","history.loading":"加载中…","history.title":"审批","history.emptySub":"当前会话还没有审批记录","history.emptyHint":"自动放行与转人工都会出现在这里","history.sub":"最新在上 · 点开看命令与详情","history.tagAuto":"自动放行","history.tagPending":"转人工","history.tagAllow":"人工批准","history.tagReject":"人工拒绝","history.tagCancel":"人工取消","history.tagUnavailable":"审批不可用","history.unknownTool":"工具","detail.request":"请求","detail.audit":"审核","detail.command":"命令","detail.path":"路径","detail.description":"描述","detail.old":"原文","detail.new":"改成","detail.content":"写入内容","detail.code":"代码","detail.url":"URL","detail.query":"查询","detail.script":"脚本","detail.sql":"SQL","detail.prompt":"提示词","detail.input":"输入","detail.text":"文本","detail.body":"正文","detail.message":"消息","detail.pattern":"模式","detail.selector":"选择器","detail.cwd":"工作目录","detail.workdir":"命令工作目录","detail.empty":"(空)","detail.sandbox":"沙箱","detail.justification":"模型理由","detail.pipe":"管道","detail.keyword":"关键词","detail.judgeModel":"审核模型","detail.judgeCategory":"审核类别","detail.judgeAction":"执行动作","detail.judgeReason":"审核理由","detail.judgeError":"审核失败","detail.judgeRaw":"审核结果原文","detail.source":"来源","detail.judgeFailed":"未完成（解析失败/超时转人工，不执行「其他」的动作）","set.title":"自动审批","set.intro":"需要审批的行为由审核模型自动判定。允许或拒绝与在网页点按钮相同；拿不准则交给原来的人工审批框。","set.allowlistCorrupt":"规则文件损坏，当前是内存默认，普通保存不会覆盖磁盘。请修好 allowlist.json，或点「恢复默认」写回出厂规则。","set.pluginCorrupt":"插件配置损坏，拒绝保存以免清空审核模型。请修好 ~/.dsh/auto-approve/config.json，或","set.pluginCorruptOverwrite":"覆盖损坏配置","set.loading":"加载中…","set.loadFailed":"加载失败：{error}","set.resetConfirm":"再点一次确认恢复","set.presetMissingTitle":"权限预设","set.driftTitle":"权限预设表需要更新","set.driftBody":"DSH 出厂权限预设表多了 {keys}。本 profile 的 permission 行由本插件写入，patch 会整块替换 config，所以不会自动出现这些预设；请更新插件或手工合并该行。","set.presetMissingSub":"插件启动时会写入 auto-approve。当前未检测到，可手动补写。","set.presetWrite":"写入权限预设","set.presetWriteNote":"写入后需重启 dsh web","set.presetWrote":"已写入，请重启 dsh web","set.modeTitle":"自动审批模式","set.modeWs":"工作区可写（推荐）","set.modeWsHint":"工作区内直接放行，越出工作区需审核。","set.modeRo":"只读","set.modeRoHint":"工作区内写操作也需审核。","set.modeHint":"点选即写入。改完需重启 dsh web，并重新选择「自动审批」或开新会话。","set.save":"保存","set.hotOk":"已生效（热更新，无需重启）","set.modeSaved":"已写入。请重启 dsh web，并重新选择「自动审批」或开新会话","set.overview":"审批总览","set.overviewSub":"关键词（拒绝优先于人工优先于允许）→ 审核表由模型归类，程序按表执行。解析失败转人工。","set.stepKeywords":"关键词","set.stepCriteria":"审核表","set.stepJudge":"审核模型","set.counts":"拒 {reject} · 人 {human} · 允 {allow}","set.criteriaCount":"{n} 项","set.followDefault":"跟随默认","set.unconfigured":"未配置","set.kwSub":"匹配命令、路径和工作目录。拒绝/人工词也匹配工具名；允许词不匹配工具名，避免把 bash/write 整类放行。","set.empty":"暂无","set.presetTag":"预置","set.kwEditTitle":"点击修改","set.kwPlaceholder":"新关键词","set.add":"添加","set.resetKeywords":"恢复默认关键词","set.resetKeywordsOk":"已恢复默认关键词","set.confirm":"确认","set.delete":"删除","set.criteriaSub":"审核模型只看 id 和说明：说明写清「什么情况下选这个 id」。id 用英文（字母、数字、-、_），会显示在审批历史里；「其他」是兜底行——不能删除，说明也固定（只能改动作）。","set.descPlaceholder":"说明（什么情况下选这个 id）","set.criterionOtherNote":"兜底行：说明固定，只能改动作","set.resetCriteriaZh":"恢复中文默认审核表","set.resetCriteriaEn":"恢复英文默认审核表","set.resetCriteriaOk":"已恢复为{lang}默认审核表","set.addCriterion":"添加审核项","set.criterionId":"id","set.judgeTitle":"审核模型","set.judgeSubLead":"独立于当前会话模型。空则跟随部署默认","set.judgeSubFallback":"（{provider} / {model}）","set.judgeSubNoFallback":"（当前没有默认可跟随）","set.judgeSubTail":"。没有可用路由时当次转人工，不会再猜一个模型。建议思考强度 off。","set.followProvider":"跟随默认提供方","set.followModel":"跟随默认模型","set.modelDefaultEffort":"模型默认","set.effortOff":"off（建议）","set.judgeTimeoutMs":"审核超时(ms)：","set.judgeSaved":"审核设置已保存","set.judgeLangZh":"中文","set.judgeLangEn":"English","set.judgePrompt":"审核提示词","set.judgePromptLang":"当前语言：{lang}","set.judgePromptHint":"用 {{criteria}} 插入当前审核表；删掉占位符时会把审核表附在末尾。与审核模型、超时一起保存。","set.langByRestore":"语言在「恢复默认」时选择：恢复默认提示词或审核表会同时把提示词语言切成所选语言。","set.judgePromptCustom":"已自定义","set.judgePromptDefault":"默认","set.resetJudgePromptZh":"恢复中文默认提示词","set.resetJudgePromptEn":"恢复英文默认提示词","set.resetJudgePromptOk":"已恢复{lang}默认提示词","set.overwriteOk":"已覆盖损坏的插件配置","err.missingPayload":"工具参数不完整，转人工","err.missingPayloadUncaptured":"未捕获工具参数，转人工","err.truncatedPayload":"工具参数过长已截断，转人工（禁止按前缀自动放行）","err.pluginError":"插件判定异常，转人工","err.allowlistCorrupt":"规则文件损坏，拒绝覆盖。请先「恢复默认」写回出厂规则，或修好磁盘上的 allowlist.json","err.allowlistWrite":"写入 allowlist 失败","err.criterionNotFound":"未找到该审核项","err.criterionNeedId":"需要英文 id（字母、数字、-、_）","err.criterionNeedDesc":"需要说明：写清什么情况下选这个 id","err.criterionIdExists":"id 已存在","err.criterionOtherLocked":"「其他」不可删除","err.criterionOtherFixed":"「其他」是兜底行：说明固定，只能改动作","err.criteriaOp":"审核表请用添加 / 修改 / 删除 / 恢复默认","err.opMustSet":"{kind} 只能用修改操作","err.invalidNumber":"无效数值","err.keywordEmpty":"关键词不能为空","err.keywordNotFound":"未找到该关键词","err.keywordsOp":"关键词请用添加 / 修改 / 删除 / 恢复默认","err.valueEmpty":"值不能为空","err.unknownKind":"未知规则类型：{kind}","err.unknownOp":"未知操作：{op}","err.ruleNotFound":"未找到匹配的规则","err.badBody":"请求体不是 JSON","err.needSessionId":"需要 sessionId","err.pluginCorrupt":"插件配置损坏，拒绝覆盖。请修好磁盘文件，或点「覆盖损坏配置」","err.pluginWrite":"写入配置失败","err.unknownEndpoint":"未知接口：{endpoint}","err.internal":"内部错误：{error}","err.catalog":"无法列出模型：{error}","err.info":"无法读取模型信息：{error}","err.judgeUnconfigured":"未配置审核模型","err.judgeEffort":"思考强度 {effort} 不受支持","err.judgeTimeout":"审核超时（{ms}ms）","err.judgeRetryTimeout":"审核重试超时（{ms}ms）","err.judgeFailed":"审核失败","err.judgeCall":"审核模型调用失败：{error}","err.judgeEmpty":"审核模型输出为空","err.judgeParse":"审核模型输出无法解析","err.judgeUpstream":"审核模型路由失败：{error}","err.noPresetsKey":"permission 条目缺少 presets 键，请手动添加","err.preset":"写入预设失败：{error}","err.presetSandboxMissing":"预设里没有 sandbox 行，无法写入沙箱模式；请检查 profile 的 cordis.patch.yml","rpc.unavailable":"connection.rpc 不可用","rpc.failed":"RPC 失败"}`)
+    const EN = JSON.parse(String.raw`{"slot.notice":"Auto-approve notice","slot.history":"Approvals","slot.settings":"Auto-approve","action.reject":"Reject","action.allow":"Allow","action.human":"Human","sandbox.read-only":"Read-only","sandbox.workspace-write":"Workspace write","sandbox.danger-full-access":"Full access","source.web":"Web","verdict.keyword-allow":"Keyword allow","verdict.keyword-reject":"Keyword reject","verdict.keyword-human":"Keyword → human","verdict.criteria-reject":"Criteria reject","verdict.criteria-allow":"Criteria allow","verdict.criteria-human":"Criteria → human","verdict.judge-failed":"Judge failed → human","verdict.missing-payload":"Missing tool args → human","verdict.truncated-payload":"Truncated args → human","verdict.plugin-error":"Plugin error → human","verdict.human":"To human","verdict.cancelled":"Human cancel","verdict.unavailable":"Unavailable","path.keyword-reject":"Keyword reject","path.keyword-allow":"Keyword allow","path.keyword-human":"Keyword → human","path.criteria-reject":"Criteria reject","path.criteria-allow":"Criteria allow","path.criteria-human":"Criteria → human","path.judge-failed":"Judge failed → human","path.missing-payload":"Missing tool args → human","path.truncated-payload":"Truncated args → human","path.plugin-error":"Plugin error → human","notice.feedError":"Approval notices unavailable","notice.feedErrorTag":"Connection failed","notice.pendingTitle":"Waiting for human: {preview}","notice.pendingTag":"Human review","notice.webApproved":"Approved: {preview}","notice.webApprovedTag":"Approved","notice.rejectedTitle":"Rejected: {preview}","notice.rejectedTag":"Rejected","notice.cancelledTitle":"Cancelled: {preview}","notice.unavailableTitle":"Unavailable: {preview}","notice.autoTag":"Auto-allowed · {verdict}","notice.autoDefault":"Auto-allowed","notice.rejectedDefault":"Rejected","notice.hint":"Notice","notice.close":"Dismiss","notice.feedLoadFailed":"Approval notices failed to load; retrying","history.noSession":"No session selected","history.loadFailed":"Failed to load: {error}","history.loading":"Loading…","history.title":"Approvals","history.emptySub":"This session has no approval records yet","history.emptyHint":"Auto-allows and human escalations appear here","history.sub":"Newest first · expand for command and details","history.tagAuto":"Auto-allowed","history.tagPending":"To human","history.tagAllow":"Human allow","history.tagReject":"Human reject","history.tagCancel":"Human cancel","history.tagUnavailable":"Unavailable","history.unknownTool":"Tool","detail.request":"Request","detail.audit":"Review","detail.command":"Command","detail.path":"Path","detail.description":"Description","detail.old":"Original","detail.new":"Replacement","detail.content":"Write contents","detail.code":"Code","detail.url":"URL","detail.query":"Query","detail.script":"Script","detail.sql":"SQL","detail.prompt":"Prompt","detail.input":"Input","detail.text":"Text","detail.body":"Body","detail.message":"Message","detail.pattern":"Pattern","detail.selector":"Selector","detail.cwd":"Working directory","detail.workdir":"Command working directory","detail.empty":"(empty)","detail.sandbox":"Sandbox","detail.justification":"Model justification","detail.pipe":"Pipeline","detail.keyword":"Keyword","detail.judgeModel":"Judge model","detail.judgeCategory":"Category","detail.judgeAction":"Action","detail.judgeReason":"Judge reason","detail.judgeError":"Judge error","detail.judgeRaw":"Judge raw output","detail.source":"Source","detail.judgeFailed":"Incomplete (parse failure/timeout → human; does not run Other)","set.title":"Auto-approve","set.intro":"Actions that need approval are judged automatically. Allow and reject match clicking the Web buttons; uncertainty goes to the original human dialog.","set.allowlistCorrupt":"The rules file is corrupt. This process is using in-memory defaults and will not overwrite the disk. Repair allowlist.json, or Restore defaults to write shipped rules.","set.pluginCorrupt":"Plugin config is corrupt; saves are refused so the judge model is not wiped. Repair ~/.dsh/auto-approve/config.json, or ","set.pluginCorruptOverwrite":"Overwrite corrupt config","set.loading":"Loading…","set.loadFailed":"Failed to load: {error}","set.resetConfirm":"Click again to confirm restore","set.presetMissingTitle":"Permission preset","set.driftTitle":"Permission preset table needs updating","set.driftBody":"The shipped permission table has new presets: {keys}. This profile's permission row is written by this plugin, and a patch replaces that config wholesale, so they will not appear automatically. Update the plugin or merge that row by hand.","set.presetMissingSub":"Startup writes auto-approve. It was not detected; you can write it now.","set.presetWrite":"Write permission preset","set.presetWriteNote":"Restart dsh web after writing","set.presetWrote":"Written. Restart dsh web","set.modeTitle":"Auto-approve mode","set.modeWs":"Workspace write (recommended)","set.modeWsHint":"In-workspace writes skip approval; outside the workspace still goes through the judge.","set.modeRo":"Read-only","set.modeRoHint":"In-workspace writes also go through the judge.","set.modeHint":"Clicking a mode writes it. Then restart dsh web and re-select Auto-approve or start a new session.","set.save":"Save","set.hotOk":"Applied (live; no restart)","set.modeSaved":"Written. Restart dsh web and re-select Auto-approve or start a new session","set.overview":"Approval overview","set.overviewSub":"Keywords (reject > human > allow) → the judge classifies; the table decides. Parse failure → human.","set.stepKeywords":"Keywords","set.stepCriteria":"Criteria","set.stepJudge":"Judge model","set.counts":"rej {reject} · hum {human} · all {allow}","set.criteriaCount":"{n} rows","set.followDefault":"Follow default","set.unconfigured":"Not configured","set.kwSub":"Match command, path, and workdir. Reject/human also match the tool name; allow keywords do not, so bash/write is not allowed as a class.","set.empty":"None","set.presetTag":"Shipped","set.kwEditTitle":"Click to edit","set.kwPlaceholder":"New keyword","set.add":"Add","set.resetKeywords":"Restore default keywords","set.resetKeywordsOk":"Default keywords restored","set.confirm":"Confirm","set.delete":"Delete","set.criteriaSub":"The judge sees only the id and description: state when to pick this id. Use an English id (letters, digits, -, _); it is shown in the approval history. \"Other\" is the fallback row: it cannot be deleted and its description is fixed (only the action can change).","set.descPlaceholder":"Description (when to pick this id)","set.criterionOtherNote":"Fallback row: description fixed, action editable","set.resetCriteriaZh":"Restore Chinese default criteria","set.resetCriteriaEn":"Restore English default criteria","set.resetCriteriaOk":"Restored {lang} default criteria","set.addCriterion":"Add criterion","set.criterionId":"id","set.judgeTitle":"Judge model","set.judgeSubLead":"Independent of the session model. Empty follows the deployment default","set.judgeSubFallback":" ({provider} / {model})","set.judgeSubNoFallback":" (no default to follow)","set.judgeSubTail":". With no usable route, that request goes to a human; the plugin will not guess a model. Prefer effort off.","set.followProvider":"Follow default provider","set.followModel":"Follow default model","set.modelDefaultEffort":"Model default","set.effortOff":"off (recommended)","set.judgeTimeoutMs":"Judge timeout (ms):","set.judgeSaved":"Judge settings saved","set.judgeLangZh":"Chinese","set.judgeLangEn":"English","set.judgePrompt":"Judge prompt","set.judgePromptLang":"Current language: {lang}","set.judgePromptHint":"Use {{criteria}} to insert the current criteria table; if the placeholder is removed, the table is appended. Saved with the judge model and timeout.","set.langByRestore":"The language is chosen when you restore: restoring the default prompt or criteria also switches the prompt language to the one you pick.","set.judgePromptCustom":"Custom","set.judgePromptDefault":"Default","set.resetJudgePromptZh":"Restore Chinese default prompt","set.resetJudgePromptEn":"Restore English default prompt","set.resetJudgePromptOk":"Restored {lang} default prompt","set.overwriteOk":"Corrupt plugin config overwritten","err.missingPayload":"Tool arguments are incomplete; sending to human","err.missingPayloadUncaptured":"Tool arguments were not captured; sending to human","err.truncatedPayload":"Tool arguments were truncated; sending to human (no prefix auto-allow)","err.pluginError":"Plugin error; sending to human","err.allowlistCorrupt":"Rules file is corrupt; refusing to overwrite. Restore defaults or fix allowlist.json on disk.","err.allowlistWrite":"Failed to write allowlist","err.criterionNotFound":"Criterion not found","err.criterionNeedId":"An English id is required (letters, digits, -, _)","err.criterionNeedDesc":"A description is required: state when to pick this id","err.criterionIdExists":"id already exists","err.criterionOtherLocked":"“Other” cannot be deleted","err.criterionOtherFixed":"“Other” is the fallback row: its description is fixed, only the action can change","err.criteriaOp":"Criteria accept add / set / remove / reset","err.opMustSet":"{kind} only accepts set","err.invalidNumber":"Invalid number","err.keywordEmpty":"Keyword cannot be empty","err.keywordNotFound":"Keyword not found","err.keywordsOp":"Keywords accept add / set / remove / reset","err.valueEmpty":"Value cannot be empty","err.unknownKind":"Unknown rule kind: {kind}","err.unknownOp":"Unknown operation: {op}","err.ruleNotFound":"No matching rule","err.badBody":"Request body is not JSON","err.needSessionId":"sessionId is required","err.pluginCorrupt":"Plugin config is corrupt; refusing to overwrite. Fix the file on disk, or overwrite the corrupt config.","err.pluginWrite":"Failed to write plugin config","err.unknownEndpoint":"Unknown endpoint: {endpoint}","err.internal":"Internal error: {error}","err.catalog":"Could not list models: {error}","err.info":"Could not load model info: {error}","err.judgeUnconfigured":"Judge model is not configured","err.judgeEffort":"reasoningEffort {effort} is not supported","err.judgeTimeout":"Judge timed out ({ms}ms)","err.judgeRetryTimeout":"Judge retry timed out ({ms}ms)","err.judgeFailed":"Judge failed","err.judgeCall":"Judge call failed: {error}","err.judgeEmpty":"Judge output was empty","err.judgeParse":"Judge output could not be parsed","err.judgeUpstream":"Judge route failed: {error}","err.noPresetsKey":"The permission entry has no presets key; add it manually","err.preset":"Failed to write preset: {error}","err.presetSandboxMissing":"The preset has no sandbox line; cannot set the sandbox mode. Check the profile cordis.patch.yml","rpc.unavailable":"connection.rpc is unavailable","rpc.failed":"RPC failed"}`)
 
     function fillLocale(template, params) {
       if (!params) return template
@@ -179,10 +180,6 @@ window.__ModuleLoader__.load({
 
     function actionLabel(t, action) {
       return lookupLabel(t, 'action', action) || (action ? String(action) : '')
-    }
-
-    function criterionLabel(t, criterion, storedLabel) {
-      return lookupLabel(t, 'criterion', criterion) || storedLabel || (criterion ? String(criterion) : '')
     }
 
     function sandboxLabel(t, mode) {
@@ -600,7 +597,7 @@ window.__ModuleLoader__.load({
                         [t('detail.judgeModel'), [j.provider, j.model, j.effort].filter(Boolean).join(' / ')],
                         [t('detail.judgeCategory'), j.failed
                           ? t('detail.judgeFailed')
-                          : criterionLabel(t, j.criterion || ev.category, j.label)],
+                          : (j.criterion || ev.category || '')],
                         [t('detail.judgeAction'), actionLabel(t, j.action) || j.action],
                         [t('detail.judgeReason'), codedText(t, j.reason || ev.judgeReason)],
                         [t('detail.judgeError'), formatErr(t, j.errorCode || j.error, { ms: j.errorMs || '', error: j.errorDetail || '', effort: j.errorEffort || '' })],
@@ -627,7 +624,7 @@ window.__ModuleLoader__.load({
       const [feedback, setFeedback] = React.useState(null)
       const [newKeyword, setNewKeyword] = React.useState('')
       const [newKeywordAction, setNewKeywordAction] = React.useState('human')
-      const [newCriterion, setNewCriterion] = React.useState({ id: '', label: '', description: '', action: 'human' })
+      const [newCriterion, setNewCriterion] = React.useState({ id: '', description: '', action: 'human' })
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
       const [models, setModels] = React.useState([])
       const [efforts, setEfforts] = React.useState([])
@@ -753,7 +750,8 @@ window.__ModuleLoader__.load({
         } catch (e) {}
       }
 
-      const resetBtn = function (kind, idleLabel, okMsg, value) {
+      const langName = function (lang) { return t(lang === 'en' ? 'set.judgeLangEn' : 'set.judgeLangZh') }
+      const resetBtn = function (kind, idleLabel, onConfirm) {
         const armed = resetArmed === kind
         return React.createElement('button', {
           type: 'button',
@@ -765,16 +763,22 @@ window.__ModuleLoader__.load({
               return
             }
             setResetArmed(null)
-            if (kind === 'judgePrompt') {
-              const lang = judgePromptLang === 'en' ? 'en' : 'zh'
-              const prompts = {}
-              prompts[lang] = ''
-              run('save-plugin', { judgePrompts: prompts }, okMsg, { reload: true })
-              return
-            }
-            run('rule-op', { op: 'reset', kind: kind, value: value }, okMsg)
+            onConfirm()
           },
         }, armed ? t('set.resetConfirm') : idleLabel)
+      }
+      // 语言选项已取消：只有在「恢复默认」时选语言，选中的语言同时决定框架/卡片语言。
+      const restoreCriteria = function (lang) {
+        const ok = t('set.resetCriteriaOk', { lang: langName(lang) })
+        return resetBtn('criteria-' + lang, t(lang === 'en' ? 'set.resetCriteriaEn' : 'set.resetCriteriaZh'),
+          function () { run('rule-op', { op: 'reset', kind: 'criteria', value: { lang: lang } }, ok, { reload: true }) })
+      }
+      const restorePrompt = function (lang) {
+        const prompts = {}
+        prompts[lang] = ''
+        const ok = t('set.resetJudgePromptOk', { lang: langName(lang) })
+        return resetBtn('judgePrompt-' + lang, t(lang === 'en' ? 'set.resetJudgePromptEn' : 'set.resetJudgePromptZh'),
+          function () { run('save-plugin', { judgePromptLang: lang, judgePrompts: prompts }, ok, { reload: true }) })
       }
 
       const saveJudge = function () {
@@ -783,8 +787,8 @@ window.__ModuleLoader__.load({
           showFeedback(t('err.invalidNumber'), false)
           return
         }
+        // 不带 judgePromptLang：语言只由两个「恢复默认」动作决定，保存设置不该动它。
         run('save-plugin', {
-          judgePromptLang: judgePromptLang,
           judge: { provider: judgeProvider, model: judgeModel, reasoningEffort: judgeEffort },
           judgeTimeoutMs: n,
           judgePrompts: (function () {
@@ -902,7 +906,7 @@ window.__ModuleLoader__.load({
               return React.createElement('span', {
                 className: 'ab-set-inv ' + (c.action === 'reject' ? 'ab-set-inv-hard' : c.action === 'allow' ? 'ab-set-inv-ok' : 'ab-set-inv-mode'),
                 key: c.id, title: c.id,
-              }, (criterionLabel(t, c.id, c.label) || c.id) + ' · ' + (actionLabel(t, c.action) || c.action))
+              }, c.id + ' · ' + (actionLabel(t, c.action) || c.action))
             }),
           ),
         ),
@@ -1017,7 +1021,9 @@ window.__ModuleLoader__.load({
             }, t('set.add')),
           ),
           React.createElement('div', { className: 'ab-set-row ab-set-foot' },
-            resetBtn('keywords', t('set.resetKeywords'), t('set.resetKeywordsOk')),
+            resetBtn('keywords', t('set.resetKeywords'), function () {
+              run('rule-op', { op: 'reset', kind: 'keywords', value: null }, t('set.resetKeywordsOk'))
+            }),
           ),
           ),
         ),
@@ -1050,7 +1056,7 @@ window.__ModuleLoader__.load({
               }
               return React.createElement('div', { className: 'ab-set-item ab-set-item-crit', key: c.id },
                 React.createElement('div', { className: 'ab-set-crit-top' },
-                  React.createElement('span', { className: 'ab-set-item-id', title: c.id }, criterionLabel(t, c.id) || c.id),
+                  React.createElement('span', { className: 'ab-set-item-id', title: c.id }, c.id),
                   React.createElement('select', {
                     className: 'ab-set-select', value: c.action || 'human',
                     onChange: function (e) { commitCrit({ action: e.target.value }) },
@@ -1074,32 +1080,26 @@ window.__ModuleLoader__.load({
                   }, resetArmed === ('del-c:' + c.id) ? t('set.confirm') : '✕'),
                 ),
                 React.createElement('div', { className: 'ab-set-item-fields' },
-                  React.createElement('input', {
-                    key: c.id + ':label:' + (c.label || ''),
-                    className: 'ab-set-input ab-set-input-ui',
-                    defaultValue: c.label || '',
-                    placeholder: t('set.labelPlaceholder'),
-                    onBlur: function (e) {
-                      const next = e.target.value.trim()
-                      if (!next || next === c.label) return
-                      commitCrit({ label: next })
-                    },
-                    onKeyDown: function (e) { if (e.key === 'Enter') e.currentTarget.blur() },
-                  }),
-                  React.createElement('textarea', {
-                    key: c.id + ':desc:' + (c.description || ''),
-                    className: 'ab-set-textarea',
-                    defaultValue: c.description || '',
-                    placeholder: t('set.descPlaceholder'),
-                    rows: 3,
-                    ref: sizeTextarea,
-                    onInput: function (e) { sizeTextarea(e.currentTarget) },
-                    onBlur: function (e) {
-                      const next = e.target.value.trim()
-                      if (next === (c.description || '')) return
-                      commitCrit({ description: next })
-                    },
-                  }),
+                  // `other` 是结构行：说明由出厂提供（框架靠它指认兜底行），只读展示。
+                  c.id === 'other'
+                    ? React.createElement('div', { className: 'ab-set-crit-fixed' },
+                      React.createElement('span', { className: 'ab-set-item-meta' }, t('set.criterionOtherNote')),
+                      React.createElement('p', { className: 'ab-set-card-sub' }, c.description || ''),
+                    )
+                    : React.createElement('textarea', {
+                      key: c.id + ':desc:' + (c.description || ''),
+                      className: 'ab-set-textarea',
+                      defaultValue: c.description || '',
+                      placeholder: t('set.descPlaceholder'),
+                      rows: 3,
+                      ref: sizeTextarea,
+                      onInput: function (e) { sizeTextarea(e.currentTarget) },
+                      onBlur: function (e) {
+                        const next = e.target.value.trim()
+                        if (next === (c.description || '')) return
+                        commitCrit({ description: next })
+                      },
+                    }),
                 ),
               )
             }),
@@ -1121,11 +1121,6 @@ window.__ModuleLoader__.load({
               ),
             ),
             React.createElement('div', { className: 'ab-set-item-fields' },
-              React.createElement('input', {
-                className: 'ab-set-input ab-set-input-ui', placeholder: t('set.labelPlaceholder'),
-                value: newCriterion.label,
-                onChange: function (e) { setNewCriterion(Object.assign({}, newCriterion, { label: e.target.value })) },
-              }),
               React.createElement('textarea', {
                 className: 'ab-set-textarea',
                 placeholder: t('set.descPlaceholder'),
@@ -1139,23 +1134,20 @@ window.__ModuleLoader__.load({
             React.createElement('div', { className: 'ab-set-row ab-set-foot' },
               React.createElement('button', {
                 type: 'button', className: 'ab-set-btn ab-set-btn-primary',
-                disabled: busy || !(newCriterion.id || newCriterion.label),
+                disabled: busy || !newCriterion.id || !newCriterion.description.trim(),
                 onClick: function () {
                   const row = newCriterion
                   run('rule-op', { op: 'add', kind: 'criteria', value: row }).then(function (res) {
-                    if (res) setNewCriterion({ id: '', label: '', description: '', action: 'human' })
+                    if (res) setNewCriterion({ id: '', description: '', action: 'human' })
                   })
                 },
               }, t('set.addCriterion')),
             ),
           ),
+          React.createElement('p', { className: 'ab-set-card-sub' }, t('set.langByRestore')),
           React.createElement('div', { className: 'ab-set-row ab-set-foot' },
-            resetBtn(
-              'criteria',
-              t('set.resetCriteria', { lang: t(judgePromptLang === 'en' ? 'set.judgeLangEn' : 'set.judgeLangZh') }),
-              t('set.resetCriteriaOk', { lang: t(judgePromptLang === 'en' ? 'set.judgeLangEn' : 'set.judgeLangZh') }),
-              { lang: judgePromptLang },
-            ),
+            restoreCriteria('zh'),
+            restoreCriteria('en'),
           ),
           ),
         ),
@@ -1199,20 +1191,10 @@ window.__ModuleLoader__.load({
               }),
             ),
           ),
-          React.createElement('div', { className: 'ab-set-row' },
-            React.createElement('span', { className: 'ab-set-item-meta' }, t('set.judgeLang')),
-            React.createElement('select', {
-              className: 'ab-set-select', value: judgePromptLang,
-              onChange: function (e) { setJudgePromptLang(e.target.value === 'en' ? 'en' : 'zh') },
-            },
-              React.createElement('option', { value: 'zh' }, t('set.judgeLangZh')),
-              React.createElement('option', { value: 'en' }, t('set.judgeLangEn')),
-            ),
-            React.createElement('span', { className: 'ab-set-card-sub' }, t('set.judgeLangHint')),
-          ),
           React.createElement('div', { className: 'ab-set-item-fields' },
             React.createElement('div', { className: 'ab-set-row' },
               React.createElement('span', { className: 'ab-set-item-meta' }, t('set.judgePrompt')),
+              React.createElement('span', { className: 'ab-set-card-sub' }, t('set.judgePromptLang', { lang: langName(judgePromptLang) })),
               (function () {
                 const shipped = String(((snapshot.predefined && snapshot.predefined.judgePrompts) || {})[judgePromptLang] || '')
                 const draft = String((judgePromptDrafts && judgePromptDrafts[judgePromptLang]) || '')
@@ -1243,7 +1225,8 @@ window.__ModuleLoader__.load({
             React.createElement('input', { className: 'ab-set-input ab-set-input-num', type: 'number', min: 1000, value: timeoutMs, onChange: function (e) { setTimeoutMs(e.target.value) } }),
           ),
           React.createElement('div', { className: 'ab-set-row ab-set-foot' },
-            resetBtn('judgePrompt', t('set.resetJudgePrompt'), t('set.resetJudgePromptOk')),
+            restorePrompt('zh'),
+            restorePrompt('en'),
             React.createElement('button', {
               type: 'button', className: 'ab-set-btn ab-set-btn-primary', disabled: busy,
               onClick: saveJudge,

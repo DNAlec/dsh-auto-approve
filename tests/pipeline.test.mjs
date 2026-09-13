@@ -107,10 +107,10 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     else process.env.DSH_HOME = prevHome
   })
 
-  it('拒绝：rm -rf 命中关键词，直接 rejected', async () => {
+  it('拒绝：清根形态命中关键词，直接 rejected', async () => {
     const { outcome } = await runCase(ctx, {
-      command: 'rm -rf tmp/aa-reject-probe',
-      reason: 'escalate sandbox to danger-full-access: 删临时目录',
+      command: 'rm -rf /',
+      reason: 'escalate sandbox to danger-full-access: 清根',
     })
     assert.equal(outcome, 'rejected')
   })
@@ -219,7 +219,7 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
 
   it('拒绝词但参数过长：仍按关键词拒绝', async () => {
     const { outcome, events } = await runCase(ctx, {
-      command: 'rm -rf tmp/x ' + 'x'.repeat(9000),
+      command: 'mkfs.ext4 /dev/sdb1 ' + 'x'.repeat(9000),
       reason: 'escalate sandbox to danger-full-access: 超长拒绝词',
     })
     assert.equal(outcome, 'rejected')
@@ -382,7 +382,7 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
   it('决策事件带叶子字段（只读观测契约）', async () => {
     ctx._emits.length = 0
     const { outcome } = await runCase(ctx, {
-      command: 'rm -rf tmp/aa-emit-probe',
+      command: 'mkfs.ext4 /dev/sdb1',
       reason: 'escalate sandbox to danger-full-access: 决策事件',
     })
     assert.equal(outcome, 'rejected')

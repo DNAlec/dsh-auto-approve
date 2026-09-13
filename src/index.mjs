@@ -533,7 +533,7 @@ export function apply(ctx, rawConfig = {}) {
       }
     }
     const row = lookupCriteria(allowlist.criteria, result.criterion)
-    return { ...result, action: row.action, label: row.label, ...meta }
+    return { ...result, action: row.action, ...meta }
   }
 
   function applyHumanOutcome(ctxInfo, outcome) {
@@ -765,7 +765,7 @@ export function apply(ctx, rawConfig = {}) {
             ok: true,
             value: {
               config: {
-                version: allowlist.version || 18,
+                version: allowlist.version || 19,
                 corrupt: allowlistCorrupt,
                 rejectKeywords: allowlist.rejectKeywords || [],
                 humanKeywords: allowlist.humanKeywords || [],
@@ -806,15 +806,27 @@ export function apply(ctx, rawConfig = {}) {
           return { ok: true, value: { events: readEventsSince(paths.events, sessionId, since) } }
         }
         if (endpoint === 'rule-op') {
+          const op = String(body.op || '')
+          const kind = String(body.kind || '')
           let value = body.value
-          if (String(body.kind || '') === 'criteria' && String(body.op || '') === 'reset') {
+          const resetCriteria = kind === 'criteria' && op === 'reset'
+          if (resetCriteria) {
             const lang = normalizeJudgePromptLang(
               (value && typeof value === 'object' && value.lang) || pluginCfg.judgePromptLang,
             )
             value = { lang }
           }
-          const result = applyRuleOp(String(body.op || ''), String(body.kind || ''), value)
-          if (result.ok && String(body.kind || '') === 'judgeTimeoutMs') {
+          const result = applyRuleOp(op, kind, value)
+          if (result.ok && resetCriteria) {
+            // 语言选项已取消：恢复默认审核表时选的语言同时决定框架与卡片语言。
+            if (pluginCfg.judgePromptLang !== value.lang) {
+              const prevLang = pluginCfg.judgePromptLang
+              pluginCfg.judgePromptLang = value.lang
+              if (persistPluginCfg()) audit(`CONFIG  judgePromptLang → ${value.lang}`)
+              else pluginCfg.judgePromptLang = prevLang
+            }
+          }
+          if (result.ok && kind === 'judgeTimeoutMs') {
             pluginCfg.judge.timeoutMs = allowlist.judgeTimeoutMs
             persistPluginCfg()
           }

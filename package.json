@@ -1,6 +1,6 @@
 {
   "name": "@dnalec/dsh-auto-approve",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "DeepSeek Harness 自动审批门控 + 设置页",
   "type": "module",
   "main": "./src/index.mjs",
@@ -14,6 +14,7 @@
     "client.js",
     "locales.mjs",
     "cordis.patch.yml",
+    "AGENTS.md",
     "README.md",
     "README.zh.md",
     "CHANGELOG.md",
