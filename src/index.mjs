@@ -17,6 +17,7 @@
 import {
   NAME,
   pathsFor,
+  resolveProfilePatchPath,
   tryLoadJson,
   saveJson,
   audit as appendAudit,
@@ -37,12 +38,15 @@ import {
   parseReason,
   matchKeywordBuckets,
   buildJudgePrompt,
+  resolveJudgePromptTemplate,
+  shippedJudgePromptTemplate,
   parseJudgeClassify,
   pickToolArgs,
   toolArgsTruncated,
   clipToolArgsForEvent,
   formatKeywordHay,
   formatAllowKeywordHay,
+  formatPathKeywordHay,
   formatJudgeCard,
   hasToolPayload,
   rememberCachedCall,
@@ -53,12 +57,25 @@ import {
   mutateAllowlistOp,
   fail,
   effectiveJudgeTimeoutMs,
+  judgeMaxTokens,
 } from './rules.mjs'
-import { getSetupState, migratePresetCopy, setAutoApproveSandbox } from './preset-patch.mjs'
+import { dirname } from 'node:path'
+import {
+  getSetupState,
+  migratePresetCopy,
+  presetDrift,
+  readBasePresetKeys,
+  setAutoApproveSandbox,
+} from './preset-patch.mjs'
 
 export const name = NAME
-/** webServer 本身不用，只为等 web 起来再注册 RPC。 */
-export const inject = ['approval', 'permissionPresets', 'llm', 'timer', 'webServer']
+/**
+ * 只列门控真正需要的服务。**不要**放 `webServer`：cordis 把插件 `inject` 当必需服务，
+ * 缺一个就停在 PENDING、apply 完全不执行（`vendor/cordis/src/fiber.ts`），
+ * 而 `webserver` 行只在 web-app bundle 里 —— headless / acp / sdk 组合下会连审批门控一起失踪。
+ * RPC 侧自己用 `ctx.inject(['connection'], …)`，`connection.fetch.register` 不需要 webServer。
+ */
+export const inject = ['approval', 'permissionPresets', 'llm', 'timer']
 
 /** Host Session 的工作目录在 header.cwd，没有 session.cwd。 */
 export function readSessionCwd(session) {
@@ -80,6 +97,8 @@ export function rpcFail(code, details) {
  */
 export function apply(ctx, rawConfig = {}) {
   const paths = pathsFor()
+  // 真实 profile 目录从 ctx.baseUrl 推导；拿不到才回落到 profiles/web。
+  paths.profilePatch = resolveProfilePatchPath(ctx, rawConfig, paths.profilePatch)
   ensureDir(paths.auto)
   migratePresetCopy(paths.profilePatch)
 
@@ -132,8 +151,22 @@ export function apply(ctx, rawConfig = {}) {
       if (presetSetup.ok && presetSetup.needRestart) {
         console.log(`[${NAME}] 已写入 auto-approve 权限预设（sandbox=${pluginCfg.presetSandbox}）；live patch 重载后会话权限会出现「自动审批」`)
       } else if (!presetSetup.ok) {
-        console.error(`[${NAME}] 写入 auto-approve 预设失败`, presetSetup.code || presetSetup.error)
+        console.error(
+          `[${NAME}] 写入 auto-approve 预设失败（${presetSetup.code || presetSetup.error || 'err.preset'}）：${paths.profilePatch}`,
+          presetSetup.details || '',
+        )
       }
+    }
+  }
+  {
+    // 出厂预设表比本 profile 那份新：只警告，不自动改写用户文件（patch 里 config 是整块替换）。
+    const drift = presetSetupState().drift
+    if (drift.baseKnown && drift.missing.length) {
+      console.warn(
+        `[${NAME}] DSH 出厂权限预设表多了 ${drift.missing.join(', ')}，`
+        + `但 profile 的 permission 行是本插件写入的副本（patch 整块替换 config），不会自动包含；`
+        + `请更新插件或手工合并 ${paths.profilePatch}`,
+      )
     }
   }
   let eventSeq = maxEventId(paths.events)
@@ -151,6 +184,18 @@ export function apply(ctx, rawConfig = {}) {
   const pendingCalls = new Map()
   const log = (line) => console.log(`[${NAME}] ${line}`)
   const audit = (line) => appendAudit(paths.audit, line)
+
+  /**
+   * setup 状态 + 预设表漂移。
+   * 插件写进 profile patch 的 `permission` 行会整块替换 base 的 config（patch 语义不做深合并），
+   * 所以 DSH 出厂表新增预设时本 profile 不会有：读 base 的 patch 比一比，只提示、不自动改写。
+   */
+  function presetSetupState() {
+    const setup = getSetupState(paths.profilePatch)
+    const base = readBasePresetKeys(dirname(paths.profilePatch))
+    if (!base.ok) return { ...setup, drift: { baseKnown: false, missing: [], extra: [] } }
+    return { ...setup, drift: { baseKnown: true, baseKeys: base.keys, ...presetDrift(base.keys, setup.presets) } }
+  }
   const llm = ctx.llm
   const permissionPresets = ctx.permissionPresets
   const agentDefaultModel = ctx.get('agentDefaultModel')
@@ -324,11 +369,11 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   /**
-   * 调用审核模型。不要传 messages.system：newapi 会映射成 developer 角色导致 400。
-   * 分类提示全部折进 user 文本。
+   * 调用审核模型。不要传 messages.system：部分 OpenAI 兼容网关会把 system 映射成 developer 导致 400。
+   * 分类提示全部折进 user 文本。带推理档位时输出预算要留出推理 token，否则空文本会被当成解析失败。
    */
   async function callJudge(userText, signal, route, system) {
-    const prompt = system || buildJudgePrompt(allowlist.criteria, pluginCfg.judgePromptLang)
+    const prompt = system || buildJudgePrompt(allowlist.criteria, pluginCfg.judgePromptLang, resolveJudgePromptTemplate(pluginCfg, pluginCfg.judgePromptLang))
     const opts = {
       provider: route.provider,
       model: route.model,
@@ -337,7 +382,7 @@ export function apply(ctx, rawConfig = {}) {
         content: [{ type: 'text', text: prompt + '\n\n' + userText }],
       }],
       temperature: 0,
-      maxTokens: 256,
+      maxTokens: judgeMaxTokens(route.reasoningEffort),
       signal,
     }
     if (route.reasoningEffort) opts.reasoningEffort = route.reasoningEffort
@@ -359,7 +404,7 @@ export function apply(ctx, rawConfig = {}) {
     const criteria = allowlist.criteria || DEFAULT_CRITERIA
     const lang = normalizeJudgePromptLang(pluginCfg.judgePromptLang)
     const user = formatJudgeCard(toolName, mode, justification, args, cwd, lang)
-    const text = await callJudge(user, signal, route, buildJudgePrompt(criteria, lang))
+    const text = await callJudge(user, signal, route, buildJudgePrompt(criteria, lang, resolveJudgePromptTemplate(pluginCfg, lang)))
     try {
       return { ...parseJudgeClassify(text, criteria), raw: String(text || '').slice(0, 800) }
     } catch (error) {
@@ -368,10 +413,24 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
-  async function withRetry(runFn, label, timeoutMs) {
+  /**
+   * 单次判定 + 超时 + 重试。
+   * `outerSignal` 是审批请求自己的取消信号：请求被取消后不该继续烧模型调用。
+   * 注意**不要**去 abort `req.signal`，这里只观察它。
+   */
+  async function withRetry(runFn, label, timeoutMs, outerSignal) {
+    const cancelled = () => Boolean(outerSignal && outerSignal.aborted)
     const runOnce = async () => {
+      if (cancelled()) return { aborted: true }
       const controller = new AbortController()
       let cancelTimer
+      const onOuterAbort = () => controller.abort(`${NAME}: ${label} 请求已取消`)
+      const linkable = outerSignal && typeof outerSignal.addEventListener === 'function'
+      if (linkable) {
+        outerSignal.addEventListener('abort', onOuterAbort, { once: true })
+        // 竞态窗口：cancelled() 之后、addEventListener 之前就 abort 了，事件不会再触发。
+        if (outerSignal.aborted) onOuterAbort()
+      }
       const timed = new Promise((resolve) => {
         cancelTimer = ctx.timeout(() => resolve({ timedOut: true }), timeoutMs)
       })
@@ -380,11 +439,15 @@ export function apply(ctx, rawConfig = {}) {
           .then((r) => ({ ...r, timedOut: false }))
           .catch((error) => ({ judgeError: error }))
         const result = await Promise.race([call, timed])
+        if (cancelled()) return { aborted: true }
         if (result.judgeError) throw result.judgeError
         return result
       } finally {
         if (typeof cancelTimer === 'function') {
           try { cancelTimer() } catch { /* disposer */ }
+        }
+        if (linkable && typeof outerSignal.removeEventListener === 'function') {
+          outerSignal.removeEventListener('abort', onOuterAbort)
         }
         controller.abort(`${NAME}: ${label} 结束`)
       }
@@ -392,6 +455,7 @@ export function apply(ctx, rawConfig = {}) {
     let last = { failed: true }
     try {
       const first = await runOnce()
+      if (first.aborted) return first
       if (!first.timedOut) return first
       last = { failed: true, timedOut: true, errorCode: 'err.judgeTimeout', error: 'err.judgeTimeout', errorMs: String(timeoutMs) }
       console.warn(`[${NAME}] ${label} 超时(${timeoutMs}ms)，转人工`)
@@ -413,6 +477,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     try {
       const second = await runOnce()
+      if (second.aborted) return second
       if (!second.timedOut) return second
       last = { failed: true, timedOut: true, errorCode: 'err.judgeRetryTimeout', error: 'err.judgeRetryTimeout', errorMs: String(timeoutMs) }
       console.warn(`[${NAME}] ${label} 重试超时(${timeoutMs}ms)`)
@@ -431,7 +496,7 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
-  async function judgeOperation(toolName, mode, justification, args, cwd) {
+  async function judgeOperation(toolName, mode, justification, args, cwd, requestSignal) {
     const route = await resolveJudgeRoute()
     const meta = {
       provider: route.provider || '',
@@ -447,7 +512,11 @@ export function apply(ctx, rawConfig = {}) {
       (signal) => judgeOnce(toolName, mode, justification, args, signal, route, cwd),
       '审核模型',
       timeoutMs,
+      requestSignal,
     )
+    if (result.aborted) {
+      return { aborted: true, criterion: 'other', reason: '', ...meta }
+    }
     if (result.failed) {
       return {
         action: 'human',
@@ -588,7 +657,8 @@ export function apply(ctx, rawConfig = {}) {
         return toHuman('missing-payload', 'other', { judgeReason: why })
       }
       const hay = formatKeywordHay(toolName, reason, toolArgs, sessionCwd)
-      const kw = matchKeywordBuckets(hay, allowlist, formatAllowKeywordHay(toolArgs))
+      const pathHay = formatPathKeywordHay(toolArgs, sessionCwd)
+      const kw = matchKeywordBuckets(hay, allowlist, formatAllowKeywordHay(toolArgs), pathHay)
 
       const eventDetail = { args: toolArgs, cwd: sessionCwd }
       if (kw && kw.action === 'reject') {
@@ -617,9 +687,15 @@ export function apply(ctx, rawConfig = {}) {
         return toHuman('keyword-human', '')
       }
 
-      const judged = await judgeOperation(toolName, mode, justification, toolArgs, sessionCwd)
+      const judged = await judgeOperation(toolName, mode, justification, toolArgs, sessionCwd, req.signal)
       const criterion = judged.criterion || 'other'
       const judgeReason = judged.reason || ''
+      if (judged.aborted) {
+        // 请求已被取消（工具执行 signal abort）。审批服务会以 cancelled 结算并丢弃迟到结果，
+        // 这里不再占坑、也不再调 next()，避免取消后还弹人工框。
+        audit(`CANCEL  ${toolName} mode=${mode || 'none'} judge aborted`)
+        return 'cancelled'
+      }
       if (judged.failed) {
         audit(`FAILED  ${toolName} mode=${mode || 'none'} → 人工 | ${judged.error || reason.slice(0, 120)}`)
         return toHuman('judge-failed', criterion, {
@@ -703,8 +779,12 @@ export function apply(ctx, rawConfig = {}) {
                 rejectKeywords: shippedRejectKeywords(),
                 humanKeywords: [],
                 criteria: shippedCriteria(pluginCfg.judgePromptLang),
+                judgePrompts: {
+                  zh: shippedJudgePromptTemplate('zh'),
+                  en: shippedJudgePromptTemplate('en'),
+                },
               },
-              setup: getSetupState(paths.profilePatch),
+              setup: presetSetupState(),
               plugin: pluginCfg,
               pluginCorrupt: pluginCfgCorrupt,
               providers: (() => {
@@ -766,6 +846,9 @@ export function apply(ctx, rawConfig = {}) {
           if (body && Object.prototype.hasOwnProperty.call(body, 'presetSandbox')) {
             preset = setAutoApproveSandbox(paths.profilePatch, pluginCfg.presetSandbox)
             if (preset && !preset.ok) {
+              // 沙箱没写进 patch 就整个回滚：不能让 config.json 说 read-only、patch 还是全权限。
+              pluginCfg = prev
+              persistPluginCfg({ overwriteCorrupt: Boolean(body.overwriteCorrupt) })
               return rpcFail(preset.code || 'err.preset', preset.details || { error: String(preset.error || '') })
 
             }
@@ -780,7 +863,7 @@ export function apply(ctx, rawConfig = {}) {
             persistPluginCfg()
           }
           audit('CONFIG  plugin 已更新')
-          return { ok: true, value: { ok: true, plugin: pluginCfg, preset, setup: getSetupState(paths.profilePatch) } }
+          return { ok: true, value: { ok: true, plugin: pluginCfg, preset, setup: presetSetupState() } }
         }
         if (endpoint === 'judge-catalog') {
           const provider = String(body.provider || configuredRoute().provider)
@@ -860,5 +943,5 @@ export function apply(ctx, rawConfig = {}) {
     }
   })
 
-  log(`已挂载：关键词→审核表 sandbox=${pluginCfg.presetSandbox}`)
+  log(`已挂载：关键词→审核表 sandbox=${pluginCfg.presetSandbox} profilePatch=${paths.profilePatch}`)
 }

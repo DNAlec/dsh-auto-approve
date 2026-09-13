@@ -1,4 +1,4 @@
-import { describe, it, after } from 'node:test'
+import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -33,19 +33,20 @@ function createCtx() {
   return ctx
 }
 
-describe('启动时损坏配置', () => {
-  const homes = []
-  let prevHome
+describe('启动时损坏配置', { concurrency: false }, () => {
+  let origHome
+
+  before(() => {
+    origHome = process.env.DSH_HOME
+  })
 
   after(() => {
-    if (prevHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = prevHome
+    if (origHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = origHome
   })
 
   it('损坏的 config.json 不改已有 read-only sandbox，也不覆盖磁盘', () => {
-    prevHome = process.env.DSH_HOME
     const home = mkdtempSync(join(tmpdir(), 'aa-corrupt-'))
-    homes.push(home)
     process.env.DSH_HOME = home
     mkdirSync(join(home, 'auto-approve'))
     mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
@@ -75,7 +76,6 @@ describe('启动时损坏配置', () => {
   })
 
   it('缺失 config.json 且已有 auto-approve 时不把 sandbox 改成默认 workspace-write', () => {
-    prevHome = process.env.DSH_HOME
     const home = mkdtempSync(join(tmpdir(), 'aa-missing-cfg-'))
     process.env.DSH_HOME = home
     mkdirSync(join(home, 'auto-approve'))
@@ -100,5 +100,17 @@ describe('启动时损坏配置', () => {
     }, null, 2) + '\n', 'utf8')
     apply(createCtx(), { onlyAutoApprovePreset: true })
     assert.equal(readAutoApproveSandbox(patch), 'read-only')
+  })
+
+  it('损坏的 allowlist.json 不覆盖磁盘', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aa-corrupt-al-'))
+    process.env.DSH_HOME = home
+    mkdirSync(join(home, 'auto-approve'))
+    mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
+    writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n', 'utf8')
+    const allowlist = join(home, 'auto-approve', 'allowlist.json')
+    writeFileSync(allowlist, '{not-json', 'utf8')
+    apply(createCtx(), { onlyAutoApprovePreset: true })
+    assert.equal(readFileSync(allowlist, 'utf8'), '{not-json')
   })
 })

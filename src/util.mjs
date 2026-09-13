@@ -8,15 +8,56 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const NAME = '@dnalec/dsh-auto-approve'
+
+/** DSH 的用户 patch 层文件名（profile 目录下）。 */
+export const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
 
 export function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh')
 }
 
+/**
+ * 从 cordis 的 `baseUrl` 推导当前 profile 的 patch 文件路径。
+ * app-boot 把 root include 的 baseUrl 锚在 profile 目录
+ * （`packages/boot/app-boot/src/index.ts`：`ctx.baseUrl = pathToFileURL(dirname(configPath)).href + '/'`），
+ * 所以这里能拿到真实 profile，而不是写死 `profiles/web`。
+ * 拿不到（测试、非 file: URL）时返回 ''，由调用方回落到 `pathsFor()` 的默认位置。
+ * @param {string} baseUrl - `ctx.baseUrl`
+ * @returns {string} 绝对路径或 ''
+ */
+export function profilePatchFromBaseUrl(baseUrl) {
+  const s = String(baseUrl || '')
+  if (!s.startsWith('file:')) return ''
+  try {
+    const url = new URL(s)
+    // 目录判定看 pathname：`file:///a/b/?x=1` 的字符串不以 / 结尾，但路径是目录。
+    let dir = fileURLToPath(url)
+    if (!url.pathname.endsWith('/')) dir = dirname(dir)
+    if (!dir || dir === '/' || dir === '\\') return ''
+    return join(dir, PROFILE_PATCH_FILENAME)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * patch 文件路径的优先级：显式配置 → 当前 profile 目录 → 默认 `profiles/web`。
+ * @param {object} ctx - 插件 ctx（只用 baseUrl）。
+ * @param {object} rawConfig - 插件行配置，可含 `profilePatch` 绝对路径。
+ * @param {string} fallback - `pathsFor()` 给出的默认位置。
+ * @returns {string}
+ */
+export function resolveProfilePatchPath(ctx, rawConfig, fallback) {
+  const explicit = rawConfig && typeof rawConfig.profilePatch === 'string' ? rawConfig.profilePatch.trim() : ''
+  if (explicit) return explicit
+  return profilePatchFromBaseUrl(ctx && ctx.baseUrl) || String(fallback || '')
+}
+
 /** auto-approve = 规则/审计/插件配置；legacyPluginConfig 仅作 0.1.x 迁移源。 */
-export function pathsFor(home = dshHome()) {
+export function pathsFor(home = dshHome(), profileName = 'web') {
   const auto = join(home, 'auto-approve')
   const bridge = join(home, 'approval-bridge')
   return {
@@ -27,7 +68,7 @@ export function pathsFor(home = dshHome()) {
     events: join(auto, 'events.jsonl'),
     pluginConfig: join(auto, 'config.json'),
     legacyPluginConfig: join(bridge, 'config.json'),
-    profilePatch: join(home, 'profiles', 'web', 'cordis.patch.yml'),
+    profilePatch: join(home, 'profiles', profileName, PROFILE_PATCH_FILENAME),
   }
 }
 export function ensureDir(dir) {

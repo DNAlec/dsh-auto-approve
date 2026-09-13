@@ -1,6 +1,6 @@
 {
   "name": "@dnalec/dsh-auto-approve",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness 自动审批门控 + 设置页",
   "type": "module",
   "main": "./src/index.mjs",
@@ -22,7 +22,8 @@
 
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/rules.mjs && node --check src/preset-patch.mjs && node --check src/util.mjs && node --check locales.mjs && node --check client.js"
+    "check": "node --check src/index.mjs && node --check src/rules.mjs && node --check src/preset-patch.mjs && node --check src/util.mjs && node --check locales.mjs && node --check client.js && node --check scripts/sync-locales.mjs && node scripts/sync-locales.mjs",
+    "locales:sync": "node scripts/sync-locales.mjs --write"
   },
   "keywords": [
     "deepseek-harness",

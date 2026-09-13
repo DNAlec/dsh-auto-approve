@@ -1,0 +1,25 @@
+# 每次 push / PR 都跑测试与语法检查。
+# 发布流程在 publish.yml（tag 触发），这里只保证 main 不会带着红测试躺着。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - run: npm test
+      - run: npm run check

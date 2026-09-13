@@ -7,10 +7,10 @@ import { pathsFor, tryLoadJson, loadJson, appendEvent, trimEventsFile, readEvent
 
 describe('pathsFor', () => {
   it('插件配置在 auto-approve，旧路径仅作迁移源', () => {
-    const p = pathsFor('/tmp/dsh-home')
-    assert.equal(p.pluginConfig, join('/tmp/dsh-home', 'auto-approve', 'config.json'))
-    assert.equal(p.legacyPluginConfig, join('/tmp/dsh-home', 'approval-bridge', 'config.json'))
-    assert.equal(p.allowlist, join('/tmp/dsh-home', 'auto-approve', 'allowlist.json'))
+    const p = pathsFor('dsh-home')
+    assert.equal(p.pluginConfig, join('dsh-home', 'auto-approve', 'config.json'))
+    assert.equal(p.legacyPluginConfig, join('dsh-home', 'approval-bridge', 'config.json'))
+    assert.equal(p.allowlist, join('dsh-home', 'auto-approve', 'allowlist.json'))
     assert.equal('qqbot' in p, false)
   })
 })
@@ -42,6 +42,35 @@ describe('trimEventsFile', () => {
     assert.equal(trimEventsFile(p, 10, 3), true)
     const evs = readEventsSince(p, 's', 0)
     assert.deepEqual(evs.map((e) => e.id), [4, 5, 6])
+  })
+})
+
+describe('readEventsSince', () => {
+  it('按会话过滤、按 since 边界增量，空 sessionId 返回全部', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev2-'))
+    const p = join(dir, 'events.jsonl')
+    appendEvent(p, { id: 1, sessionId: 'a', verdict: 'auto' })
+    appendEvent(p, { id: 2, sessionId: 'b', verdict: 'auto' })
+    appendEvent(p, { id: 3, sessionId: 'a', verdict: 'auto' })
+    assert.deepEqual(readEventsSince(p, 'a', 0).map((e) => e.id), [1, 3])
+    assert.deepEqual(readEventsSince(p, 'b', 0).map((e) => e.id), [2])
+    // since 是「已见过的最大 id」，边界本身不重复返回
+    assert.deepEqual(readEventsSince(p, 'a', 1).map((e) => e.id), [3])
+    assert.deepEqual(readEventsSince(p, 'a', 3), [])
+    assert.deepEqual(readEventsSince(p, '', 0).map((e) => e.id), [1, 2, 3])
+  })
+
+  it('损坏行与缺 id 记录被跳过，不影响其它事件', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev3-'))
+    const p = join(dir, 'events.jsonl')
+    writeFileSync(p, [
+      '{"id":1,"sessionId":"a"}',
+      '{broken',
+      '{"sessionId":"a"}',
+      '{"id":2,"sessionId":"a"}',
+      '',
+    ].join('\n'), 'utf8')
+    assert.deepEqual(readEventsSince(p, 'a', 0).map((e) => e.id), [1, 2])
   })
 })
 

@@ -1,4 +1,4 @@
-# Push a version tag (v0.2.0) to publish to npm.
+# Push a version tag (v0.2.1) to publish to npm.
 # Tag must match package.json "version" (without the leading v).
 #
 # One-time npmjs.com setup (Trusted Publisher, no long-lived token):
