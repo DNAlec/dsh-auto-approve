@@ -6,8 +6,10 @@
  * 不改 req，不 abort req.signal，不平行结算。
  * 管道（仅当会话预设为「自动审批」）：
  *   1. 关键词：拒绝 > 人工 > 允许（只匹配工具名 + command + 路径 + workdir）
- *   2. 审核表：模型只输出类别 id，程序按表执行允许 / 拒绝 / 人工
- * 缺工具参数、解析失败、超时、插件异常 → 转人工，禁止在空卡片上自动放行。
+ *   2. 缺工具参数 / 字段截断：按 missingPayloadAction / truncatedAction（默认转人工）
+ *   3. 审核模型只输出「类别 id + 风险等级 + 理由」，程序按 (行, 等级) 查三格动作
+ * 非表内结果（认不出、空输出、超时、调用异常、路由不可用、插件异常）一律落 other 的格子；
+ * 请求被取消不产生 verdict；缺参数与截断按各自的配置项处理。插件不含任何硬编码动作。
  *
  * 预设沙箱 `presetSandbox` 是 auto-approve 的底线，不是管道步骤。
  * `danger-full-access` 不因模式名短路。
@@ -31,6 +33,7 @@ import {
   shippedRejectKeywords,
   DEFAULT_CRITERIA,
   shippedCriteria,
+  shippedLevels,
   normalizeJudgePromptLang,
   normalizeAllowlist,
   mergePluginConfig,
@@ -43,6 +46,8 @@ import {
   parseJudgeClassify,
   pickToolArgs,
   toolArgsTruncated,
+  formatArgsNote,
+  formatTruncatedNote,
   clipToolArgsForEvent,
   formatKeywordHay,
   formatAllowKeywordHay,
@@ -52,12 +57,15 @@ import {
   rememberCachedCall,
   takeCachedCall,
   lookupCriteria,
+  resolveCriterionAction,
   cloneAllowlist,
   copyAllowlistInto,
   mutateAllowlistOp,
   fail,
   effectiveJudgeTimeoutMs,
   judgeMaxTokens,
+  judgeEmptyRetryMaxTokens,
+  judgeFailureNote,
 } from './rules.mjs'
 import { dirname } from 'node:path'
 import {
@@ -261,6 +269,11 @@ export function apply(ctx, rawConfig = {}) {
     put('effort', 40)
     put('criterion', 40)
     put('action', 20)
+    // 三格动作：这一条判定实际命中了哪一档、等级是模型给的还是走 levels.fallback 来的。
+    put('level', 20)
+    put('levelSrc', 20)
+    // 判定来源：strict / bare / fuzzy / none / empty / timeout / call / route / plugin。
+    put('src', 20)
     put('label', 80)
     put('reason', 600)
     put('raw', 800)
@@ -269,6 +282,12 @@ export function apply(ctx, rawConfig = {}) {
     put('errorMs', 20)
     put('errorDetail', 400)
     put('errorEffort', 40)
+    // 空正文诊断：raw 为空会被上面的规则整条丢掉，所以「一个字都没吐」必须自己带标记。
+    put('emptyOutput', 0, true)
+    put('emptyRetry', 0, true)
+    put('finishKind', 40)
+    put('reasoningChars', 20)
+    put('maxTokens', 20)
     put('failed', 0, true)
     put('timedOut', 0, true)
     return Object.keys(out).length ? out : undefined
@@ -292,10 +311,15 @@ export function apply(ctx, rawConfig = {}) {
     if (o.judgeReason) ev.judgeReason = String(o.judgeReason).slice(0, 600)
     if (o.path) ev.path = o.path
     if (o.source) ev.source = o.source
+    // 判定来源（strict/bare/fuzzy/none/empty/timeout/call/route/plugin）：放事件顶层，便于统计与展示。
+    if (o.src) ev.src = String(o.src).slice(0, 20)
     if (o.cwd) ev.cwd = String(o.cwd).slice(0, 400)
     if (o.keyword) ev.keyword = String(o.keyword).slice(0, 120)
-    const args = clipToolArgsForEvent(o.args)
+    const eventOmitted = []
+    const args = clipToolArgsForEvent(o.args, eventOmitted)
     if (Object.keys(args).length) ev.args = args
+    // 卡片没给全（预算外的大字段）时留证据：模型只能在缺字段的情况下判，事件要能看出这件事。
+    if (eventOmitted.length) ev.argsOmitted = eventOmitted.slice(0, 12).join(',')
     const judge = clipJudgeForEvent(o.judge)
     if (judge) ev.judge = judge
     try {
@@ -324,6 +348,8 @@ export function apply(ctx, rawConfig = {}) {
     }
     if (e.outcome) leaf.outcome = String(e.outcome)
     if (e.category || info.category) leaf.category = String(e.category || info.category || '')
+    if (e.level || info.level) leaf.level = String(e.level || info.level || '')
+    if (e.src || info.src) leaf.src = String(e.src || info.src || '')
     if (e.judgeReason || info.judgeReason) leaf.judgeReason = String(e.judgeReason || info.judgeReason || '').slice(0, 600)
     return leaf
   }
@@ -370,10 +396,13 @@ export function apply(ctx, rawConfig = {}) {
 
   /**
    * 调用审核模型。不要传 messages.system：部分 OpenAI 兼容网关会把 system 映射成 developer 导致 400。
-   * 分类提示全部折进 user 文本。带推理档位时输出预算要留出推理 token，否则空文本会被当成解析失败。
+   * 分类提示全部折进 user 文本。预算按**路由会不会推理**给（`judgeMaxTokens` 收 `route.info`）：
+   * `off` / 未配档位时适配层只是不传思考参数，模型照样可能思考，推理 token 与正文共享这个预算。
+   * 返回 `{ text, maxTokens, reasoningChars, finishKind }`：后三项用于判定失败时的现场诊断。
    */
-  async function callJudge(userText, signal, route, system) {
+  async function callJudge(userText, signal, route, system, maxTokensOverride) {
     const prompt = system || buildJudgePrompt(allowlist.criteria, pluginCfg.judgePromptLang, resolveJudgePromptTemplate(pluginCfg, pluginCfg.judgePromptLang))
+    const maxTokens = Number(maxTokensOverride) > 0 ? Number(maxTokensOverride) : judgeMaxTokens(route.reasoningEffort, route.info)
     const opts = {
       provider: route.provider,
       model: route.model,
@@ -382,33 +411,42 @@ export function apply(ctx, rawConfig = {}) {
         content: [{ type: 'text', text: prompt + '\n\n' + userText }],
       }],
       temperature: 0,
-      maxTokens: judgeMaxTokens(route.reasoningEffort),
+      maxTokens,
       signal,
     }
     if (route.reasoningEffort) opts.reasoningEffort = route.reasoningEffort
     let text = ''
+    let reasoningChars = 0
+    let finishKind = ''
     for await (const chunk of llm.stream(opts)) {
       if (chunk.type === 'text-delta') text += chunk.text
-      else if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
-        const failure = chunk.reason.failure && chunk.reason.failure.message ? chunk.reason.failure.message : chunk.reason.kind
-        const err = new Error('err.judgeCall')
-        err.code = 'err.judgeCall'
-        err.details = { error: String(failure) }
-        throw err
+      else if (chunk.type === 'reasoning-delta') reasoningChars += String(chunk.text || '').length
+      else if (chunk.type === 'finish') {
+        finishKind = String((chunk.reason && chunk.reason.kind) || '')
+        if (finishKind === 'error' || finishKind === 'aborted') {
+          const failure = chunk.reason.failure && chunk.reason.failure.message ? chunk.reason.failure.message : finishKind
+          const err = new Error('err.judgeCall')
+          err.code = 'err.judgeCall'
+          err.details = { error: String(failure) }
+          throw err
+        }
       }
     }
-    return text
+    return { text, maxTokens, reasoningChars, finishKind }
   }
 
-  async function judgeOnce(toolName, mode, justification, args, signal, route, cwd) {
+  async function judgeOnce(toolName, mode, justification, args, signal, route, cwd, maxTokens) {
     const criteria = allowlist.criteria || DEFAULT_CRITERIA
     const lang = normalizeJudgePromptLang(pluginCfg.judgePromptLang)
     const user = formatJudgeCard(toolName, mode, justification, args, cwd, lang)
-    const text = await callJudge(user, signal, route, buildJudgePrompt(criteria, lang, resolveJudgePromptTemplate(pluginCfg, lang)))
+    const res = await callJudge(user, signal, route, buildJudgePrompt(criteria, allowlist.levels, lang, resolveJudgePromptTemplate(pluginCfg, lang)), maxTokens)
+    // 诊断跟着错误走：正文为空时 raw 是空串，事件层会把它丢掉，不能只靠 raw 分辨现场。
+    const diag = { maxTokens: res.maxTokens, reasoningChars: res.reasoningChars, finishKind: res.finishKind }
     try {
-      return { ...parseJudgeClassify(text, criteria), raw: String(text || '').slice(0, 800) }
+      return { ...parseJudgeClassify(res.text, criteria), raw: String(res.text || '').slice(0, 800), ...diag }
     } catch (error) {
-      error.raw = String(text || '').slice(0, 800)
+      error.raw = String(res.text || '').slice(0, 800)
+      error.judgeDiag = diag
       throw error
     }
   }
@@ -417,10 +455,13 @@ export function apply(ctx, rawConfig = {}) {
    * 单次判定 + 超时 + 重试。
    * `outerSignal` 是审批请求自己的取消信号：请求被取消后不该继续烧模型调用。
    * 注意**不要**去 abort `req.signal`，这里只观察它。
+   * 重试策略：调用异常重试一次；`err.judgeEmpty`（模型一个字都没吐，常见于推理吃光预算）
+   * 换更大预算重试一次。分类解析不出**不**重试（重试也认不出），但也不再直接转人工——
+   * 它和所有其它非表内结果一样，由调用方落 other 的格子。
    */
   async function withRetry(runFn, label, timeoutMs, outerSignal) {
     const cancelled = () => Boolean(outerSignal && outerSignal.aborted)
-    const runOnce = async () => {
+    const runOnce = async (maxTokens) => {
       if (cancelled()) return { aborted: true }
       const controller = new AbortController()
       let cancelTimer
@@ -435,7 +476,7 @@ export function apply(ctx, rawConfig = {}) {
         cancelTimer = ctx.timeout(() => resolve({ timedOut: true }), timeoutMs)
       })
       try {
-        const call = runFn(controller.signal)
+        const call = runFn(controller.signal, maxTokens)
           .then((r) => ({ ...r, timedOut: false }))
           .catch((error) => ({ judgeError: error }))
         const result = await Promise.race([call, timed])
@@ -452,7 +493,27 @@ export function apply(ctx, rawConfig = {}) {
         controller.abort(`${NAME}: ${label} 结束`)
       }
     }
+    let emptyRetried = false
+    const failureOf = (error, previous) => {
+      const prev = previous || {}
+      const diag = (error && error.judgeDiag) || {}
+      const code = error && error.code ? error.code : 'err.judgeFailed'
+      return {
+        failed: true,
+        errorCode: code,
+        error: code,
+        errorDetail: error && error.details && error.details.error ? String(error.details.error) : '',
+        errorMs: prev.errorMs || '',
+        raw: error && error.raw ? String(error.raw).slice(0, 800) : prev.raw || '',
+        emptyOutput: code === 'err.judgeEmpty',
+        emptyRetry: emptyRetried,
+        finishKind: diag.finishKind || '',
+        reasoningChars: diag.reasoningChars === undefined ? '' : diag.reasoningChars,
+        maxTokens: diag.maxTokens === undefined ? '' : diag.maxTokens,
+      }
+    }
     let last = { failed: true }
+    let retryMaxTokens = 0
     try {
       const first = await runOnce()
       if (first.aborted) return first
@@ -461,39 +522,56 @@ export function apply(ctx, rawConfig = {}) {
       console.warn(`[${NAME}] ${label} 超时(${timeoutMs}ms)，转人工`)
       return last
     } catch (error) {
-      last = {
-        failed: true,
-        errorCode: error && error.code ? error.code : 'err.judgeFailed',
-        error: error && error.code ? error.code : 'err.judgeFailed',
-        errorDetail: error && error.details && error.details.error ? String(error.details.error) : '',
-        raw: error && error.raw ? String(error.raw).slice(0, 800) : '',
-      }
+      last = failureOf(error)
       const code = error && error.code
-      if (code === 'err.judgeParse' || code === 'err.judgeEmpty') {
-        console.error(`[${NAME}] ${label} 输出无法解析，转人工`, error)
-        return last
+      if (code === 'err.judgeEmpty') {
+        if (cancelled()) return { aborted: true }
+        retryMaxTokens = judgeEmptyRetryMaxTokens(last.maxTokens)
+        console.warn(`[${NAME}] ${label} ${judgeFailureNote(last)}，改用 maxTokens=${retryMaxTokens} 重试 1 次`)
+        emptyRetried = true
+        last.emptyRetry = true
+      } else {
+        console.error(`[${NAME}] ${label} 异常，重试 1 次`, error)
       }
-      console.error(`[${NAME}] ${label} 异常，重试 1 次`, error)
     }
     try {
-      const second = await runOnce()
+      const second = await runOnce(retryMaxTokens || undefined)
       if (second.aborted) return second
       if (!second.timedOut) return second
-      last = { failed: true, timedOut: true, errorCode: 'err.judgeRetryTimeout', error: 'err.judgeRetryTimeout', errorMs: String(timeoutMs) }
+      last = { failed: true, timedOut: true, emptyRetry: emptyRetried, errorCode: 'err.judgeRetryTimeout', error: 'err.judgeRetryTimeout', errorMs: String(timeoutMs) }
       console.warn(`[${NAME}] ${label} 重试超时(${timeoutMs}ms)`)
       return last
     } catch (error) {
-      last = {
-        failed: true,
-        errorCode: error && error.code ? error.code : 'err.judgeFailed',
-        error: error && error.code ? error.code : 'err.judgeFailed',
-        errorDetail: error && error.details && error.details.error ? String(error.details.error) : '',
-        errorMs: last.errorMs,
-        raw: error && error.raw ? String(error.raw).slice(0, 800) : last.raw,
-      }
+      const prev = { errorMs: last.errorMs, raw: last.raw }
+      last = failureOf(error, prev)
       console.error(`[${NAME}] ${label} 重试仍异常`, error)
       return last
     }
+  }
+
+  /** 非表内结果一律落 other 的格子：动作仍由 (other, 等级) 查表得到，插件不含硬编码动作。 */
+  function otherRowVerdict(level, src, extra) {
+    const row = lookupCriteria(allowlist.criteria, 'other')
+    const resolved = resolveCriterionAction(row, level, allowlist.levels)
+    return {
+      criterion: 'other',
+      reason: '',
+      level: resolved.level,
+      levelSrc: resolved.levelSrc,
+      action: resolved.action,
+      src,
+      ...extra,
+    }
+  }
+
+  /** 判定失败的原因 → 审计/事件里的 src。这些值同时是「为什么落到 other」的唯一证据。 */
+  function failureSrc(errorCode) {
+    const code = String(errorCode || '')
+    if (code === 'err.judgeEmpty') return 'empty'
+    if (code === 'err.judgeTimeout' || code === 'err.judgeRetryTimeout') return 'timeout'
+    if (code === 'err.judgeUnconfigured' || code === 'err.judgeUpstream' || code === 'err.judgeEffort') return 'route'
+    if (code === 'err.judgeCall' || code === 'err.judgeFailed') return 'call'
+    return 'call'
   }
 
   async function judgeOperation(toolName, mode, justification, args, cwd, requestSignal) {
@@ -504,36 +582,49 @@ export function apply(ctx, rawConfig = {}) {
       effort: route.reasoningEffort || '',
     }
     if (!route.ok) {
-      audit(`FAILED  judge route: ${route.code || route.error || ''}`)
-      return { action: 'human', criterion: 'other', reason: '', failed: true, errorCode: route.code || 'err.judgeUnconfigured', error: route.code || 'err.judgeUnconfigured', errorDetail: route.details && route.details.error ? String(route.details.error) : '', errorEffort: route.details && route.details.effort ? String(route.details.effort) : '', ...meta }
+      const code = route.code || 'err.judgeUnconfigured'
+      audit(`FAILED  judge route: ${code}`)
+      return otherRowVerdict('', 'route', {
+        failed: true,
+        errorCode: code,
+        error: code,
+        errorDetail: route.details && route.details.error ? String(route.details.error) : '',
+        errorEffort: route.details && route.details.effort ? String(route.details.effort) : '',
+        ...meta,
+      })
     }
     const timeoutMs = effectiveJudgeTimeoutMs(allowlist, pluginCfg)
     const result = await withRetry(
-      (signal) => judgeOnce(toolName, mode, justification, args, signal, route, cwd),
+      (signal, maxTokens) => judgeOnce(toolName, mode, justification, args, signal, route, cwd, maxTokens),
       '审核模型',
       timeoutMs,
       requestSignal,
     )
     if (result.aborted) {
+      // 请求已被取消：没有需要答复的调用，不产生 verdict。
       return { aborted: true, criterion: 'other', reason: '', ...meta }
     }
     if (result.failed) {
-      return {
-        action: 'human',
-        criterion: 'other',
-        reason: '',
+      const code = result.errorCode || result.error || 'err.judgeFailed'
+      return otherRowVerdict('', failureSrc(code), {
         failed: true,
         timedOut: Boolean(result.timedOut),
-        errorCode: result.errorCode || result.error || 'err.judgeFailed',
-        error: result.errorCode || result.error || 'err.judgeFailed',
+        errorCode: code,
+        error: code,
         errorMs: result.errorMs || '',
         errorDetail: result.errorDetail || '',
         raw: result.raw || '',
+        // 现场诊断：空正文时 raw 是空串（事件层会整条丢掉），这几项才是可分辨的证据。
+        emptyOutput: Boolean(result.emptyOutput),
+        emptyRetry: Boolean(result.emptyRetry),
+        finishKind: result.finishKind || '',
+        reasoningChars: result.reasoningChars === undefined ? '' : result.reasoningChars,
+        maxTokens: result.maxTokens === undefined ? '' : result.maxTokens,
         ...meta,
-      }
+      })
     }
     const row = lookupCriteria(allowlist.criteria, result.criterion)
-    return { ...result, action: row.action, ...meta }
+    return { ...result, ...resolveCriterionAction(row, result.level, allowlist.levels), ...meta }
   }
 
   function applyHumanOutcome(ctxInfo, outcome) {
@@ -565,6 +656,7 @@ export function apply(ctx, rawConfig = {}) {
       kind: 'manual-pending',
       category: info.category || '',
       path: info.path,
+      src: info.src || '',
       args: info.args,
       cwd: info.cwd,
       judgeReason: info.judgeReason,
@@ -610,6 +702,8 @@ export function apply(ctx, rawConfig = {}) {
   ctx.on('approval/request', async (req, next) => {
     let humanFallback = null
     let forwarded = false
+    // 最外层 catch 也要按 other 的格子处理，请求信息必须留在 try 之外可见。
+    let reqInfo = null
     try {
       // 非「自动审批」预设交给系统默认 ask，本插件不管。
       reloadAllowlist()
@@ -641,26 +735,41 @@ export function apply(ctx, rawConfig = {}) {
 
       const toHuman = (path, category, extra) => {
         forwarded = true
+        const extraJudge = (extra && extra.judge) || null
         return forwardToHuman({
           ...baseInfo,
           path,
           category: category || '',
           judgeReason: extra && extra.judgeReason,
-          judge: extra && extra.judge,
+          judge: extraJudge,
+          // 判定来源与等级要跟着转人工一起落事件：默认 other=human 时，这是分辨
+          // 「模型答了 other」和「判定压根没跑成」的唯一证据。
+          src: extraJudge && extraJudge.src ? extraJudge.src : '',
+          level: extraJudge && extraJudge.level ? extraJudge.level : '',
         }, next)
       }
       humanFallback = toHuman
-      // 没看见命令/路径就转人工，禁止关键词允许或模型标 safe。
+      // 最外层 catch 也要按 other 的格子处理，所以请求信息要留在 try 之外可见。
+      reqInfo = baseInfo
+      const eventDetail = { args: toolArgs, cwd: sessionCwd }
+      // 没看见命令/路径：按 missingPayloadAction 处理（默认转人工，禁止关键词允许或模型标 safe）。
       if (!cached.found || !hasToolPayload(toolArgs)) {
         const why = cached.found ? 'err.missingPayload' : 'err.missingPayloadUncaptured'
-        audit(`HUMAN   ${toolName} mode=${mode || 'none'} missing-payload | ${why}`)
+        if (allowlist.missingPayloadAction === 'reject') {
+          audit(`REJECT  ${toolName} mode=${mode || 'none'} missing-payload | ${why} ${formatArgsNote(toolArgs)}`)
+          recordEvent(sessionId, toolName, mode, reason, justification, 'missing-payload', {
+            kind: 'auto', path: 'missing-payload', ...eventDetail,
+          })
+          emitDecision(decisionLeaf(baseInfo, { verdict: 'missing-payload', path: 'missing-payload', outcome: 'rejected' }))
+          return 'rejected'
+        }
+        audit(`HUMAN   ${toolName} mode=${mode || 'none'} missing-payload | ${why} ${formatArgsNote(toolArgs)}`)
         return toHuman('missing-payload', 'other', { judgeReason: why })
       }
       const hay = formatKeywordHay(toolName, reason, toolArgs, sessionCwd)
       const pathHay = formatPathKeywordHay(toolArgs, sessionCwd)
       const kw = matchKeywordBuckets(hay, allowlist, formatAllowKeywordHay(toolArgs), pathHay)
 
-      const eventDetail = { args: toolArgs, cwd: sessionCwd }
       if (kw && kw.action === 'reject') {
         audit(`REJECT  ${toolName} mode=${mode || 'none'} keyword | ${reason.slice(0, 160)}`)
         recordEvent(sessionId, toolName, mode, reason, justification, 'keyword-reject', {
@@ -669,8 +778,17 @@ export function apply(ctx, rawConfig = {}) {
         emitDecision(decisionLeaf(baseInfo, { verdict: 'keyword-reject', path: 'keyword-reject', outcome: 'rejected' }))
         return 'rejected'
       }
+      // 关键词拒绝优先于截断配置：截断的 `rm -rf /` 仍直接被拒。
       if (toolArgsTruncated(toolArgs)) {
-        const why = 'err.truncatedPayload'
+        const why = `err.truncatedPayload ${formatTruncatedNote(toolArgs)}`
+        if (allowlist.truncatedAction === 'reject') {
+          audit(`REJECT  ${toolName} mode=${mode || 'none'} truncated-payload | ${why}`)
+          recordEvent(sessionId, toolName, mode, reason, justification, 'truncated-payload', {
+            kind: 'auto', path: 'truncated-payload', ...eventDetail,
+          })
+          emitDecision(decisionLeaf(baseInfo, { verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected' }))
+          return 'rejected'
+        }
         audit(`HUMAN   ${toolName} mode=${mode || 'none'} truncated-payload | ${why}`)
         return toHuman('truncated-payload', 'other', { judgeReason: why })
       }
@@ -696,50 +814,76 @@ export function apply(ctx, rawConfig = {}) {
         audit(`CANCEL  ${toolName} mode=${mode || 'none'} judge aborted`)
         return 'cancelled'
       }
-      if (judged.failed) {
-        audit(`FAILED  ${toolName} mode=${mode || 'none'} → 人工 | ${judged.error || reason.slice(0, 120)}`)
-        return toHuman('judge-failed', criterion, {
-          judgeReason: judged.error || judgeReason,
-          judge: judged,
-        })
-      }
+      // 判定失败不再短路转人工：它和其它非表内结果一样落 other 的格子，src 记录真实原因。
+      const cells = `criteria=${criterion} level=${judged.level || ''}${judged.levelSrc === 'fallback' ? '(兜底)' : ''} src=${judged.src || ''}`
+      const tail = judged.failed
+        ? `${judged.error || 'err.judgeFailed'}${judgeFailureNote(judged) ? ' ' + judgeFailureNote(judged) : ''}`
+        : (judgeReason || reason.slice(0, 120))
+      const eventJudge = { category: criterion, judgeReason, judge: judged, src: judged.src, ...eventDetail }
       if (judged.action === 'reject') {
-        audit(`REJECT  ${toolName} mode=${mode || 'none'} criteria=${criterion} | ${judgeReason || reason.slice(0, 120)}`)
+        audit(`REJECT  ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
         recordEvent(sessionId, toolName, mode, reason, justification, 'criteria-reject', {
-          kind: 'auto', category: criterion, path: 'criteria-reject', judgeReason, judge: judged, ...eventDetail,
+          kind: 'auto', path: 'criteria-reject', ...eventJudge,
         })
         emitDecision(decisionLeaf(baseInfo, {
-          verdict: 'criteria-reject', path: 'criteria-reject', outcome: 'rejected', category: criterion, judgeReason,
+          verdict: 'criteria-reject', path: 'criteria-reject', outcome: 'rejected',
+          category: criterion, level: judged.level, src: judged.src, judgeReason,
         }))
         return 'rejected'
       }
       if (judged.action === 'allow') {
-        audit(`ALLOW   ${toolName} mode=${mode || 'none'} criteria=${criterion} | ${judgeReason || reason.slice(0, 120)}`)
+        audit(`ALLOW   ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
         recordEvent(sessionId, toolName, mode, reason, justification, 'criteria-allow', {
-          kind: 'auto', category: criterion, path: 'criteria-allow', judgeReason, judge: judged, ...eventDetail,
+          kind: 'auto', path: 'criteria-allow', ...eventJudge,
         })
         emitDecision(decisionLeaf(baseInfo, {
-          verdict: 'criteria-allow', path: 'criteria-allow', outcome: 'allowed-once', category: criterion, judgeReason,
+          verdict: 'criteria-allow', path: 'criteria-allow', outcome: 'allowed-once',
+          category: criterion, level: judged.level, src: judged.src, judgeReason,
         }))
         return 'allowed-once'
       }
-      audit(`HUMAN   ${toolName} mode=${mode || 'none'} criteria=${criterion} | ${judgeReason || reason.slice(0, 120)}`)
-      return toHuman('criteria-human', criterion, { judgeReason, judge: judged })
+      audit(`HUMAN   ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
+      return toHuman('criteria-human', criterion, { judgeReason: judgeReason || tail, judge: judged })
     } catch (error) {
-      console.error(`[${NAME}] 判断过程出错，回退人工`, error)
+      console.error(`[${NAME}] 判断过程出错，按 other 的格子处理`, error)
       if (forwarded) return 'unavailable'
-      if (humanFallback) {
-        try {
-          return await humanFallback('plugin-error', 'other', {
-            judgeReason: (error && error.code) || 'err.pluginError',
-            judge: {
-              errorCode: (error && error.code) || 'err.pluginError',
-              errorDetail: String((error && error.message) || error),
-            },
-          })
-        } catch (again) {
-          console.error(`[${NAME}] 转人工仍失败，交回系统默认`, again)
+      const code = (error && error.code) || 'err.pluginError'
+      try {
+        const row = lookupCriteria(allowlist.criteria, 'other')
+        const resolved = resolveCriterionAction(row, '', allowlist.levels)
+        const detail = {
+          judgeReason: code,
+          judge: {
+            errorCode: code,
+            src: 'plugin',
+            level: resolved.level,
+            levelSrc: resolved.levelSrc,
+            action: resolved.action,
+            errorDetail: String((error && error.message) || error),
+          },
         }
+        const info = reqInfo || { sessionId: '', toolName: '', mode: '', reason: '', justification: '' }
+        const label = `${info.toolName || 'unknown'} criteria=other level=${resolved.level}${resolved.levelSrc === 'fallback' ? '(兜底)' : ''} src=plugin`
+        if (resolved.action === 'reject') {
+          audit(`REJECT  ${label} | ${code}`)
+          recordEvent(info.sessionId, info.toolName, info.mode, info.reason, info.justification, 'plugin-error', {
+            kind: 'auto', path: 'plugin-error', src: 'plugin', ...detail,
+          })
+          emitDecision(decisionLeaf(info, { verdict: 'plugin-error', path: 'plugin-error', outcome: 'rejected', src: 'plugin' }))
+          return 'rejected'
+        }
+        if (resolved.action === 'allow') {
+          audit(`ALLOW   ${label} | ${code}`)
+          recordEvent(info.sessionId, info.toolName, info.mode, info.reason, info.justification, 'plugin-error', {
+            kind: 'auto', path: 'plugin-error', src: 'plugin', ...detail,
+          })
+          emitDecision(decisionLeaf(info, { verdict: 'plugin-error', path: 'plugin-error', outcome: 'allowed-once', src: 'plugin' }))
+          return 'allowed-once'
+        }
+        audit(`HUMAN   ${label} | ${code}`)
+        if (humanFallback) return await humanFallback('plugin-error', 'other', detail)
+      } catch (again) {
+        console.error(`[${NAME}] 按 other 处理仍失败，交回系统默认`, again)
       }
       return next()
     }
@@ -765,13 +909,16 @@ export function apply(ctx, rawConfig = {}) {
             ok: true,
             value: {
               config: {
-                version: allowlist.version || 19,
+                version: allowlist.version || 20,
                 corrupt: allowlistCorrupt,
                 rejectKeywords: allowlist.rejectKeywords || [],
                 humanKeywords: allowlist.humanKeywords || [],
                 allowKeywords: allowlist.allowKeywords || [],
                 denyKeywords: allowlist.humanKeywords || [],
                 criteria: allowlist.criteria || [],
+                levels: allowlist.levels,
+                missingPayloadAction: allowlist.missingPayloadAction,
+                truncatedAction: allowlist.truncatedAction,
                 judgeTimeoutMs: allowlist.judgeTimeoutMs || 20000,
               },
               predefined: {
@@ -779,6 +926,7 @@ export function apply(ctx, rawConfig = {}) {
                 rejectKeywords: shippedRejectKeywords(),
                 humanKeywords: [],
                 criteria: shippedCriteria(pluginCfg.judgePromptLang),
+                levels: shippedLevels(pluginCfg.judgePromptLang),
                 judgePrompts: {
                   zh: shippedJudgePromptTemplate('zh'),
                   en: shippedJudgePromptTemplate('en'),
@@ -809,16 +957,16 @@ export function apply(ctx, rawConfig = {}) {
           const op = String(body.op || '')
           const kind = String(body.kind || '')
           let value = body.value
-          const resetCriteria = kind === 'criteria' && op === 'reset'
-          if (resetCriteria) {
+          const resetWithLang = (kind === 'criteria' || kind === 'levels') && op === 'reset'
+          if (resetWithLang) {
             const lang = normalizeJudgePromptLang(
               (value && typeof value === 'object' && value.lang) || pluginCfg.judgePromptLang,
             )
             value = { lang }
           }
           const result = applyRuleOp(op, kind, value)
-          if (result.ok && resetCriteria) {
-            // 语言选项已取消：恢复默认审核表时选的语言同时决定框架与卡片语言。
+          if (result.ok && resetWithLang) {
+            // 语言选项已取消：恢复默认审核表 / 等级说明时选的语言同时决定框架与卡片语言。
             if (pluginCfg.judgePromptLang !== value.lang) {
               const prevLang = pluginCfg.judgePromptLang
               pluginCfg.judgePromptLang = value.lang
