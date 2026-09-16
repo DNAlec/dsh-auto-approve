@@ -39,7 +39,11 @@ for (const { name, json } of replacements) {
   if (!hit) throw new Error(`client.js 里找不到 ${name} 的 JSON.parse(String.raw...)`)
   if (hit[2] === json) continue
   changed = true
-  src = src.replace(re, `$1${json}$3`)
+  // 必须用函数式替换：替换字符串里的 `$&` / `` $` `` / `$'` / `$1` 会被 String.replace
+  // 当替换模式展开，文案里出现这些字符时会把 client.js 写坏（校验模式本身发现不了，
+  // 因为坏的是「写」这一侧）。
+  src = src.replace(re, (_m, p1, _body, p3) => p1 + json + p3)
+  if (!src.includes(json)) throw new Error(`写入 ${name} 失败：替换后找不到内联 JSON（文案含特殊替换字符？）`)
 }
 
 if (!changed) {

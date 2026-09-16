@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathsFor, tryLoadJson, loadJson, appendEvent, trimEventsFile, readEventsSince } from '../src/util.mjs'
+import { existsSync, readdirSync, chmodSync } from 'node:fs'
+import { pathsFor, tryLoadJson, loadJson, appendEvent, appendLine, writeAtomic, trimEventsFile, readEventsSince } from '../src/util.mjs'
 
 describe('pathsFor', () => {
   it('插件配置在 auto-approve，旧路径仅作迁移源', () => {
@@ -84,5 +85,88 @@ describe('legacy plugin config', () => {
     const loaded = tryLoadJson(legacy)
     assert.equal(loaded.ok, false)
     assert.equal(readFileSync(legacy, 'utf8'), '{broken')
+  })
+})
+
+describe('trimEventsFile 不覆盖读不懂的内容（review 修复）', () => {
+  it('一行都解析不出来时不写盘', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev-bad-'))
+    const p = join(dir, 'events.jsonl')
+    const text = '{"noId":1}\n'.repeat(3000)
+    writeFileSync(p, text, 'utf8')
+    assert.equal(trimEventsFile(p, 1000, 2000), false)
+    // 「没有可解析记录」不等于「文件里没东西」：这份审批历史是唯一副本，不能清空。
+    assert.equal(readFileSync(p, 'utf8').length, text.length)
+  })
+
+  it('读不出来（路径是目录）时不写盘也不抛', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev-dir-'))
+    const asDir = join(dir, 'events.jsonl')
+    mkdirSync(asDir)
+    assert.equal(trimEventsFile(asDir, 1, 10), false)
+  })
+
+  it('读不出来（stat 成功、read 失败）时不写盘也不抛', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev-perm-'))
+    const p = join(dir, 'events.jsonl')
+    const text = [1, 2, 3].map((i) => JSON.stringify({ id: i, sessionId: 's' })).join('\n') + '\n'
+    writeFileSync(p, text, 'utf8')
+    chmodSync(p, 0o000)
+    const errors = []
+    const orig = console.error
+    console.error = (...args) => { errors.push(args.join(' ')) }
+    try {
+      assert.equal(trimEventsFile(p, 1, 1), false)
+    } finally {
+      console.error = orig
+      chmodSync(p, 0o600)
+    }
+    // 「读不出来」要打日志：不然它与「0 条可解析记录」在外层看是同一个 `false`，
+    // 少掉这条日志就分不清是权限问题还是文件坏了。
+    assert.match(errors.join(' '), /读不出来/)
+    assert.equal(readFileSync(p, 'utf8'), text, '文件必须逐字节不变')
+  })
+
+  it('可解析记录照旧被裁剪', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-ev-ok-'))
+    const p = join(dir, 'events.jsonl')
+    for (let i = 1; i <= 6; i++) writeFileSync(p, '', { flag: 'a' })
+    writeFileSync(p, [1, 2, 3, 4, 5, 6].map((i) => JSON.stringify({ id: i, sessionId: 's' })).join('\n') + '\n', 'utf8')
+    assert.equal(trimEventsFile(p, 1, 2), true)
+    assert.deepEqual(readEventsSince(p, 's', 0).map((e) => e.id), [5, 6])
+  })
+})
+
+describe('审计与原子写（review 修复）', () => {
+  it('appendLine 失败要上报（返回 false + 打日志），但不抛', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-append-'))
+    const asDir = join(dir, 'audit.log')
+    mkdirSync(asDir) // 目标是目录 → appendFileSync 必失败
+    const errors = []
+    const orig = console.error
+    console.error = (...args) => { errors.push(args.join(' ')) }
+    try {
+      assert.equal(appendLine(asDir, 'x\n'), false)
+    } finally {
+      console.error = orig
+    }
+    assert.equal(errors.length > 0, true, '审计写失败必须留痕（它是三类兜底路径的唯一证据）')
+    assert.match(errors.join(' '), /追加/)
+  })
+
+  it('writeAtomic 失败时清理临时文件并抛出，目标文件保持原样', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aa-atomic-'))
+    const target = join(dir, 'cordis.patch.yml')
+    writeFileSync(target, 'original\n', 'utf8')
+    // 让 rename 的目标变成目录 → 写失败
+    const asDir = join(dir, 'blocked.yml')
+    mkdirSync(asDir)
+    assert.throws(() => writeAtomic(asDir, 'x'), /EISDIR|ENOTDIR|EPERM|EACCES|EEXIST|EISDIR/)
+    assert.equal(readFileSync(target, 'utf8'), 'original\n')
+    // 成功路径：不留 .tmp
+    assert.equal(writeAtomic(target, 'next\n'), true)
+    assert.equal(readFileSync(target, 'utf8'), 'next\n')
+    assert.equal(existsSync(target + '.tmp'), false)
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.tmp')), [])
   })
 })

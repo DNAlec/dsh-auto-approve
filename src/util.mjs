@@ -98,7 +98,12 @@ function chmodPrivate(path) {
   try { chmodSync(path, 0o600) } catch { /* ignore */ }
 }
 
-function writeAtomic(path, text, mode) {
+/**
+ * 原子写：先写 `<path>.tmp` 再 rename，失败清掉临时文件并把异常抛给调用方。
+ * 导出让 `preset-patch.mjs` 复用：profile patch 是 `dsh web` 启动的必需输入，
+ * 写一半（进程被杀 / 磁盘满）会让 profile 解析失败、下次启动直接起不来。
+ */
+export function writeAtomic(path, text, mode) {
   const tmp = path + '.tmp'
   try {
     ensureDir(dirname(path))
@@ -128,7 +133,13 @@ export function appendLine(path, line) {
     ensureDir(dirname(path))
     appendFileSync(path, line, 'utf8')
     chmodPrivate(path)
-  } catch { /* ignore */ }
+    return true
+  } catch (error) {
+    // 审计行是超预算 / 撞护栏 / 没采集到这三类路径的**唯一证据**：
+    // 写不进去必须留痕（判定本身不受影响，所以只报错、不抛）。
+    console.error(`[${NAME}] 追加 ${path} 失败`, error)
+    return false
+  }
 }
 
 export function audit(auditPath, line) {
@@ -184,7 +195,20 @@ export function trimEventsFile(eventsPath, maxBytes = EVENTS_MAX_BYTES, keep = E
   try {
     const st = statSync(eventsPath)
     if (st.size < maxBytes) return false
-    const records = loadEventRecords(eventsPath) || []
+    const records = loadEventRecords(eventsPath)
+    // **读失败不写盘**（与 allowlist / config 同一条原则）：`statSync` 成功但
+    // `readFileSync` 失败（权限、被锁、IO 抖动）时返回 null；把 null 当空数组会让
+    // 这份审批历史的唯一副本被清成 0 字节。
+    if (!records) {
+      console.error(`[${NAME}] ${eventsPath} 超过 ${maxBytes} 字节但读不出来，本次不裁剪`)
+      return false
+    }
+    // 一行业都解析不出来：文件内容不是本插件的事件格式（可能已被别的工具改写/损坏），
+    // 同样不覆盖——宁可让它继续变大，也不能把一个看不懂的文件删空。
+    if (!records.length) {
+      console.error(`[${NAME}] ${eventsPath} 超过 ${maxBytes} 字节但没有一条可解析记录，本次不裁剪`)
+      return false
+    }
     const kept = records.slice(-Math.max(1, keep))
     const text = kept.length ? kept.map((r) => JSON.stringify(r)).join('\n') + '\n' : ''
     writeAtomic(eventsPath, text)
