@@ -60,6 +60,7 @@ window.__ModuleLoader__.load({
 .ab-detail-grid{display:grid;grid-template-columns:72px minmax(0,1fr);gap:4px 10px;align-items:start}
 .ab-detail-k{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px;padding-top:1px}
 .ab-detail-v{margin:0;color:var(--dsw-alias-label-primary);font:12px/18px var(--ds-font-family-code);white-space:pre-wrap;word-break:break-all}
+.ab-approval-detail{white-space:pre-line}
 .ab-detail-v-box{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-module-platform));border-radius:8px;padding:6px 8px;max-height:180px;overflow:auto}
 .ab-detail-warn{border-radius:8px;padding:6px 8px;background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:18px}
 .ab-empty,.ab-loading{flex:1 1 auto;color:var(--dsw-alias-label-tertiary);display:flex;align-items:center;justify-content:center;font-size:13px;line-height:20px;padding:24px}
@@ -178,8 +179,8 @@ window.__ModuleLoader__.load({
       if (key.indexOf('.') !== -1) return true
       return CARD_ARG_KEYS.indexOf(key) === -1
     }
-    const ZH = JSON.parse(String.raw`{"slot.notice":"自动放行提示","slot.history":"审批","slot.settings":"自动审批","action.reject":"拒绝","action.allow":"允许","action.human":"人工","level.low":"低","level.medium":"中","level.high":"高","src.strict":"模型分类","src.bare":"只给了 id","src.fuzzy":"模糊兜底","src.none":"认不出","src.empty":"输出为空","src.timeout":"超时","src.call":"调用失败","src.route":"无可用路由","src.plugin":"插件异常","src.truncated":"超过送审上限","src.uncaptured":"没采集到参数","src.oversize":"撞收集护栏","sandbox.read-only":"只读","sandbox.workspace-write":"工作区可写","sandbox.danger-full-access":"全权限","source.web":"网页","verdict.keyword-allow":"关键词允许","verdict.keyword-reject":"关键词拒绝","verdict.keyword-human":"关键词转人工","verdict.criteria-reject":"审核表拒绝","verdict.criteria-allow":"审核表允许","verdict.criteria-human":"审核表转人工","verdict.judge-failed":"判定失败转人工","verdict.truncated-payload":"内容超过送审上限","verdict.plugin-error":"插件异常","verdict.human":"转人工","verdict.cancelled":"人工取消","verdict.unavailable":"审批不可用","path.keyword-reject":"关键词拒绝","path.keyword-allow":"关键词允许","path.keyword-human":"关键词转人工","path.criteria-reject":"审核表拒绝","path.criteria-allow":"审核表允许","path.criteria-human":"审核表转人工","path.judge-failed":"判定失败转人工","path.truncated-payload":"内容超过送审上限","path.plugin-error":"插件异常","notice.feedError":"审批提示暂时不可用","notice.feedErrorTag":"连接失败","notice.pendingTitle":"等待人工审批：{preview}","notice.pendingTag":"人工审批中","notice.webApproved":"人工审批通过：{preview}","notice.webApprovedTag":"人工审批通过","notice.rejectedTitle":"已拒绝：{preview}","notice.rejectedTag":"已拒绝","notice.cancelledTitle":"已取消人工审批：{preview}","notice.unavailableTitle":"审批不可用：{preview}","notice.autoTag":"自动放行 · {verdict}","notice.autoDefault":"自动放行","notice.rejectedDefault":"已拒绝","notice.hint":"提示","notice.close":"关闭","notice.feedLoadFailed":"审批提示加载失败，将自动重试","history.noSession":"未选择会话","history.loadFailed":"加载失败：{error}","history.loading":"加载中…","history.title":"审批","history.emptySub":"当前会话还没有审批记录","history.emptyHint":"自动放行与转人工都会出现在这里","history.sub":"最新在上 · 点开看命令与详情","history.tagAuto":"自动放行","history.tagPending":"转人工","history.tagAllow":"人工批准","history.tagReject":"人工拒绝","history.tagCancel":"人工取消","history.tagUnavailable":"审批不可用","history.unknownTool":"工具","detail.request":"请求","detail.audit":"审核","detail.command":"命令","detail.path":"路径","detail.description":"描述","detail.old":"原文","detail.new":"改成","detail.content":"写入内容","detail.code":"代码","detail.url":"URL","detail.query":"查询","detail.script":"脚本","detail.sql":"SQL","detail.prompt":"提示词","detail.input":"输入","detail.text":"文本","detail.body":"正文","detail.message":"消息","detail.pattern":"模式","detail.selector":"选择器","detail.arg":"参数","detail.argsOmitted":"存档中略过的字段","detail.argsMore":"还有 {n} 个字段（点开前未逐条展开）","detail.cwd":"工作目录","detail.workdir":"命令工作目录","detail.empty":"(空)","detail.argsUncaptured":"⚠ 未采集到这次调用的参数：插件没拿到参数，审批记录里没有可展示的操作内容——批准等于同意一次你没看到内容的操作。","detail.sandbox":"沙箱","detail.justification":"模型理由","detail.pipe":"管道","detail.keyword":"关键词","detail.judgeModel":"审核模型","detail.judgeCategory":"审核类别","detail.judgeAction":"执行动作","detail.judgeLevel":"风险等级","detail.levelFallback":"（兜底档）","detail.judgeSrc":"判定来源","detail.judgeReason":"审核理由","detail.judgeError":"审核失败","detail.judgeRaw":"审核结果原文","detail.source":"来源","detail.judgeFailed":"判定失败（没跑成 → 固定转人工）","set.title":"自动审批","set.intro":"需要审批的调用交审核模型判定（允许 / 拒绝等同网页按钮），拿不准则交回原人工审批框。详细说明见 README。","set.allowlistCorrupt":"规则文件损坏，当前是内存默认，普通保存不会覆盖磁盘。请修好 allowlist.json，或点「恢复默认」写回出厂规则。","set.pluginCorrupt":"插件配置损坏，拒绝保存以免清空审核模型。请修好 ~/.dsh/auto-approve/config.json，或","set.pluginCorruptOverwrite":"覆盖损坏配置","set.loading":"加载中…","set.loadFailed":"加载失败：{error}","set.resetConfirm":"再点一次确认恢复","set.presetMissingTitle":"权限预设","set.driftTitle":"权限预设表需要更新","set.driftBody":"DSH 出厂权限预设表多了 {keys}；patch 整块替换 config，这些预设不会自动出现。请更新插件或手工合并该行。","set.presetMissingSub":"插件启动时会写入 auto-approve。当前未检测到，可手动补写。","set.presetWrite":"写入权限预设","set.presetWriteNote":"写入后需重启 dsh web","set.presetWrote":"已写入，请重启 dsh web","set.modeTitle":"自动审批模式","set.modeWs":"工作区可写（推荐）","set.modeWsHint":"工作区内直接放行，越出工作区需审核。","set.modeRo":"只读","set.modeRoHint":"工作区内写操作也需审核。","set.modeHint":"点选即写入；改完需重启 dsh web，并重新选择「自动审批」。","set.save":"保存","set.hotOk":"已生效（热更新，无需重启）","set.modeSaved":"已写入。请重启 dsh web，并重新选择「自动审批」或开新会话","set.overview":"审批总览","set.overviewSub":"顺序：拒绝关键词 → 人工关键词 → 闸门（看不见这次操作）→ 允许关键词 → 审核模型；判定没跑成固定转人工。","set.stepKeywords":"关键词","set.stepCriteria":"审核表","set.stepJudge":"审核模型","set.counts":"三格合计 拒 {reject} · 人 {human} · 允 {allow}","set.kwCounts":"拒 {reject} · 人 {human} · 允 {allow}","set.criteriaCount":"{n} 项","set.followDefault":"跟随默认","set.unconfigured":"未配置","set.kwSub":"匹配工具名、命令、路径、工作目录与自定义工具的参数值；看不到写入内容与数字/布尔开关，那几类只能靠审核模型。","set.empty":"暂无","set.presetTag":"预置","set.kwEditTitle":"点击修改","set.kwPlaceholder":"新关键词","set.add":"添加","set.resetKeywords":"恢复默认关键词","set.resetKeywordsOk":"已恢复默认关键词","set.confirm":"确认","set.delete":"删除","set.criteriaSub":"模型只看 id 与说明（说明写清什么情况下选这个 id）；id 用英文，会显示在审批历史里。","set.descPlaceholder":"说明（什么情况下选这个 id）","set.criterionOtherNote":"不能删除；说明与三格和其它行一样可改","set.resetCriteriaZh":"恢复中文默认审核表","set.resetCriteriaEn":"恢复英文默认审核表","set.resetCriteriaOk":"已恢复为{lang}默认审核表","set.addCriterion":"添加审核项","set.criteriaLangNote":"恢复默认会同时切换提示词语言","set.levelsTitle":"风险等级","set.levelsSub":"三档说明都会送进提示词。","set.levelFallback":"等级认不出时按：","set.levelFallbackHint":"模型没给等级或给了认不出的词时用它：兜底 high 直接拒绝，low 自动放行。","set.levelDescPlaceholder":"等级说明（什么情况算这一档）","set.resetLevelsZh":"恢复中文默认等级","set.resetLevelsEn":"恢复英文默认等级","set.resetLevelsOk":"已恢复为{lang}默认等级说明","set.truncatedAction":"超过送审上限 / 撞收集护栏：","set.humanReviewTitle":"模型转人工","set.humanReviewSub":"自动拒绝时把原因告诉模型，并允许它把这次操作转人工；批准只对同参数的一次重试有效。","set.humanReviewWarn":"开启后人工审批框成为模型可主动触发的通道（包括它被不可信内容驱动时）。默认关闭。","set.humanReviewEnable":"允许模型请求人工复核","set.humanReviewTool":"工具名：","set.humanReviewToolHint":"改完需重启 dsh web 才换名。","set.humanReviewLang":"提示语言：","set.humanReviewOn":"已开启","set.humanReviewOff":"已关闭","set.humanReviewSaved":"模型转人工设置已保存","denyReason.keyword":"关键词红线","denyReason.criterion":"审核表判定","denyReason.payload-truncated":"内容超过送审上限","denyReason.payload-uncaptured":"没采集到参数（插件侧采集故障）","denyReason.judge-empty":"审核模型没有输出","denyReason.judge-timeout":"审核模型超时","denyReason.judge-call":"审核模型调用失败","denyReason.judge-route":"没有可用审核路由","denyReason.judge-unparsed":"审核输出无法归类","denyReason.plugin-error":"审核插件异常","verdict.human-grant":"人工批准后重试放行","path.human-grant":"人工批准后重试放行","verdict.human-review":"模型请求人工复核","path.human-review":"模型请求人工复核","set.criterionId":"id","set.judgeTitle":"审核模型","set.judgeSubLead":"空则跟随部署默认","set.judgeSubFallback":"（{provider} / {model}）","set.judgeSubNoFallback":"（当前没有默认可跟随）","set.followProvider":"跟随默认提供方","set.followModel":"跟随默认模型","set.modelDefaultEffort":"模型默认","set.effortOff":"off（等同模型默认）","set.judgeProviderLabel":"提供方","set.judgeModelLabel":"模型","set.judgeEffortLabel":"思考强度","set.judgeTimeoutMs":"审核超时(ms)：","set.judgeRequestBudget":"送审内容上限(字符)：","set.judgeRequestBudgetHint":"量的是整条请求（提示词 + 卡片）；超了就按下面选的动作处理，不会切一半送审。","set.judgeSelftest":"测试判定","set.judgeSelftestBusy":"测试中…","set.judgeSelftestOk":"判定成功：{ms}ms · 类别 {category} · 正文 {chars} 字","set.judgeSelftestOkRetry":"换大预算后判定成功：{ms}ms · 类别 {category} · 正文 {chars} 字","set.judgeSelftestFail":"判定失败：{detail}","set.judgeHealthWarn":"本次运行 {n} 次判定因输出为空而转人工（推理吃光输出预算），换大预算救回 {ok} 次；仍然如此请换一个不思考的审核模型，详见 README。","err.judgeRequestBudgetRange":"送审内容上限需要在 8192 到 1000000 之间","set.judgeSaved":"审核设置已保存","set.judgeLangZh":"中文","set.judgeLangEn":"English","set.judgePrompt":"审核提示词","set.judgePromptLang":"当前语言：{lang}","set.judgePromptHint":"{{criteria}} / {{levels}} 为插入点；与审核模型一起保存。","set.langByRestore":"语言只在「恢复默认」时选择。","set.judgePromptCustom":"已自定义","set.judgePromptUnsaved":"未保存","set.judgePromptDefault":"默认","set.resetJudgePromptZh":"恢复中文默认提示词","set.resetJudgePromptEn":"恢复英文默认提示词","set.resetJudgePromptOk":"已恢复{lang}默认提示词","set.overwriteOk":"已覆盖损坏的插件配置","err.missingPayloadUncaptured":"没拿到工具参数（未捕获）","err.truncatedPayload":"送审内容超过上限（禁止不看全就判定）","err.pluginError":"插件判定异常","err.allowlistCorrupt":"规则文件损坏，拒绝覆盖。请先「恢复默认」写回出厂规则，或修好磁盘上的 allowlist.json","err.allowlistWrite":"写入 allowlist 失败","err.criterionNotFound":"未找到该审核项","err.criterionNeedId":"需要英文 id（字母、数字、-、_）","err.criterionNeedDesc":"需要说明：写清什么情况下选这个 id","err.criterionIdExists":"id 已存在","err.criterionOtherLocked":"「其他」不可删除","err.criteriaOp":"审核表请用添加 / 修改 / 删除 / 恢复默认","err.criterionLevel":"三格动作只能是 允许 / 拒绝 / 人工","err.levelNeedDesc":"等级说明不能为空","err.levelFallback":"兜底档只能是 low / medium / high","err.levelNotFound":"未找到该风险等级","err.levelsOp":"风险等级请用修改 / 恢复默认","err.invalidAction":"只能是「转人工」或「拒绝」","err.opMustSet":"{kind} 只能用修改操作","err.invalidNumber":"无效数值","err.keywordEmpty":"关键词不能为空","err.keywordNotFound":"未找到该关键词","err.keywordsOp":"关键词请用添加 / 修改 / 删除 / 恢复默认","err.valueEmpty":"值不能为空","err.unknownKind":"未知规则类型：{kind}","err.unknownOp":"未知操作：{op}","err.ruleNotFound":"未找到匹配的规则","err.badBody":"请求体不是 JSON","err.needSessionId":"需要 sessionId","err.pluginCorrupt":"插件配置损坏，拒绝覆盖。请修好磁盘文件，或点「覆盖损坏配置」","err.pluginWrite":"写入配置失败","err.unknownEndpoint":"未知接口：{endpoint}","err.internal":"内部错误：{error}","err.catalog":"无法列出模型：{error}","err.info":"无法读取模型信息：{error}","err.judgeUnconfigured":"未配置审核模型","err.judgeEffort":"思考强度 {effort} 不受支持","err.judgeTimeout":"审核超时（{ms}ms）","err.judgeRetryTimeout":"审核重试超时（{ms}ms）","err.judgeFailed":"审核失败","err.judgeCall":"审核模型调用失败：{error}","err.judgeEmpty":"审核模型输出为空","err.judgePromptTooLong":"自定义提示词过长（{chars} / 上限 {max} 字符）。提示词不会被截断保存：请自己删到上限以内再保存，否则尾巴里的输出格式与等级要求会丢失。","err.judgeUpstream":"审核模型路由失败：{error}","err.noPresetsKey":"permission 条目缺少 presets 键，请手动添加","err.preset":"写入预设失败：{error}","err.presetSandboxMissing":"预设里没有 sandbox 行，无法写入沙箱模式；请检查 profile 的 cordis.patch.yml","rpc.unavailable":"connection.rpc 不可用","rpc.failed":"RPC 失败"}`)
-    const EN = JSON.parse(String.raw`{"slot.notice":"Auto-approve notice","slot.history":"Approvals","slot.settings":"Auto-approve","action.reject":"Reject","action.allow":"Allow","action.human":"Human","level.low":"Low","level.medium":"Medium","level.high":"High","src.strict":"judge category","src.bare":"bare id","src.fuzzy":"fuzzy match","src.none":"unparsed","src.empty":"empty output","src.timeout":"timeout","src.call":"call failed","src.route":"no route","src.plugin":"plugin error","src.truncated":"judge request over budget","src.uncaptured":"arguments not captured","src.oversize":"collection guard hit","sandbox.read-only":"Read-only","sandbox.workspace-write":"Workspace write","sandbox.danger-full-access":"Full access","source.web":"Web","verdict.keyword-allow":"Keyword allow","verdict.keyword-reject":"Keyword reject","verdict.keyword-human":"Keyword → human","verdict.criteria-reject":"Criteria reject","verdict.criteria-allow":"Criteria allow","verdict.criteria-human":"Criteria → human","verdict.judge-failed":"Judge failed → human","verdict.truncated-payload":"Judge request over budget","verdict.plugin-error":"Plugin error","verdict.human":"To human","verdict.cancelled":"Human cancel","verdict.unavailable":"Unavailable","path.keyword-reject":"Keyword reject","path.keyword-allow":"Keyword allow","path.keyword-human":"Keyword → human","path.criteria-reject":"Criteria reject","path.criteria-allow":"Criteria allow","path.criteria-human":"Criteria → human","path.judge-failed":"Judge failed → human","path.truncated-payload":"Judge request over budget","path.plugin-error":"Plugin error","notice.feedError":"Approval notices unavailable","notice.feedErrorTag":"Connection failed","notice.pendingTitle":"Waiting for human: {preview}","notice.pendingTag":"Human review","notice.webApproved":"Approved: {preview}","notice.webApprovedTag":"Approved","notice.rejectedTitle":"Rejected: {preview}","notice.rejectedTag":"Rejected","notice.cancelledTitle":"Cancelled: {preview}","notice.unavailableTitle":"Unavailable: {preview}","notice.autoTag":"Auto-allowed · {verdict}","notice.autoDefault":"Auto-allowed","notice.rejectedDefault":"Rejected","notice.hint":"Notice","notice.close":"Dismiss","notice.feedLoadFailed":"Approval notices failed to load; retrying","history.noSession":"No session selected","history.loadFailed":"Failed to load: {error}","history.loading":"Loading…","history.title":"Approvals","history.emptySub":"This session has no approval records yet","history.emptyHint":"Auto-allows and human escalations appear here","history.sub":"Newest first · expand for command and details","history.tagAuto":"Auto-allowed","history.tagPending":"To human","history.tagAllow":"Human allow","history.tagReject":"Human reject","history.tagCancel":"Human cancel","history.tagUnavailable":"Unavailable","history.unknownTool":"Tool","detail.request":"Request","detail.audit":"Review","detail.command":"Command","detail.path":"Path","detail.description":"Description","detail.old":"Original","detail.new":"Replacement","detail.content":"Write contents","detail.code":"Code","detail.url":"URL","detail.query":"Query","detail.script":"Script","detail.sql":"SQL","detail.prompt":"Prompt","detail.input":"Input","detail.text":"Text","detail.body":"Body","detail.message":"Message","detail.pattern":"Pattern","detail.selector":"Selector","detail.arg":"Argument","detail.argsOmitted":"Fields omitted from this archive record","detail.argsMore":"{n} more fields (not expanded one by one)","detail.cwd":"Working directory","detail.workdir":"Command working directory","detail.empty":"(empty)","detail.argsUncaptured":"⚠ Arguments for this call were NOT captured: the plugin never received them, so this record has no operation to show — approving means allowing an operation whose content you did not see.","detail.sandbox":"Sandbox","detail.justification":"Model justification","detail.pipe":"Pipeline","detail.keyword":"Keyword","detail.judgeModel":"Judge model","detail.judgeCategory":"Category","detail.judgeAction":"Action","detail.judgeLevel":"Risk level","detail.levelFallback":" (fallback)","detail.judgeSrc":"Verdict source","detail.judgeReason":"Judge reason","detail.judgeError":"Judge error","detail.judgeRaw":"Judge raw output","detail.source":"Source","detail.judgeFailed":"judgment failed (no verdict → always asks a human)","set.title":"Auto-approve","set.intro":"Calls that need approval go to the judge model (allow / reject match the Web buttons); anything uncertain goes back to the original human dialog. Full details are in the README.","set.allowlistCorrupt":"The rules file is corrupt. This process is using in-memory defaults and will not overwrite the disk. Repair allowlist.json, or Restore defaults to write shipped rules.","set.pluginCorrupt":"Plugin config is corrupt; saves are refused so the judge model is not wiped. Repair ~/.dsh/auto-approve/config.json, or ","set.pluginCorruptOverwrite":"Overwrite corrupt config","set.loading":"Loading…","set.loadFailed":"Failed to load: {error}","set.resetConfirm":"Click again to confirm restore","set.presetMissingTitle":"Permission preset","set.driftTitle":"Permission preset table needs updating","set.driftBody":"The shipped permission table has new presets: {keys}. A patch replaces the permission config wholesale, so they will not appear automatically. Update the plugin or merge that row by hand.","set.presetMissingSub":"Startup writes auto-approve. It was not detected; you can write it now.","set.presetWrite":"Write permission preset","set.presetWriteNote":"Restart dsh web after writing","set.presetWrote":"Written. Restart dsh web","set.modeTitle":"Auto-approve mode","set.modeWs":"Workspace write (recommended)","set.modeWsHint":"In-workspace writes skip approval; outside the workspace still goes through the judge.","set.modeRo":"Read-only","set.modeRoHint":"In-workspace writes also go through the judge.","set.modeHint":"Clicking a mode writes it; restart dsh web and re-select Auto-approve.","set.save":"Save","set.hotOk":"Applied (live; no restart)","set.modeSaved":"Written. Restart dsh web and re-select Auto-approve or start a new session","set.overview":"Approval overview","set.overviewSub":"Order: reject keywords → human keywords → the gate (call not visible) → allow keywords → judge model; a judgment that never ran always asks a human.","set.stepKeywords":"Keywords","set.stepCriteria":"Criteria","set.stepJudge":"Judge model","set.counts":"3 cells: rej {reject} · hum {human} · all {allow}","set.kwCounts":"rej {reject} · hum {human} · all {allow}","set.criteriaCount":"{n} rows","set.followDefault":"Follow default","set.unconfigured":"Not configured","set.kwSub":"Matches tool name, command, path, workdir, and the arguments of custom tools; written contents and numeric/boolean switches are not visible — only the judge model sees those.","set.empty":"None","set.presetTag":"Shipped","set.kwEditTitle":"Click to edit","set.kwPlaceholder":"New keyword","set.add":"Add","set.resetKeywords":"Restore default keywords","set.resetKeywordsOk":"Default keywords restored","set.confirm":"Confirm","set.delete":"Delete","set.criteriaSub":"The judge sees only the id and description (state when to pick this id); use an English id — it is shown in the approval history.","set.descPlaceholder":"Description (when to pick this id)","set.criterionOtherNote":"Cannot be deleted; description and cells are editable like any other row","set.resetCriteriaZh":"Restore Chinese default criteria","set.resetCriteriaEn":"Restore English default criteria","set.resetCriteriaOk":"Restored {lang} default criteria","set.addCriterion":"Add criterion","set.criteriaLangNote":"Restoring defaults also switches the prompt language","set.levelsTitle":"Risk levels","set.levelsSub":"All three descriptions go into the prompt.","set.levelFallback":"When the level is unreadable, use:","set.levelFallbackHint":"Used when the model omits the level or returns a word outside the vocabulary: a high fallback rejects such calls, low allows them.","set.levelDescPlaceholder":"Level description (what counts as this level)","set.resetLevelsZh":"Restore Chinese default levels","set.resetLevelsEn":"Restore English default levels","set.resetLevelsOk":"Restored {lang} default level descriptions","set.truncatedAction":"Over the judge limit / guard hit:","set.humanReviewTitle":"Model-initiated human review","set.humanReviewSub":"Every auto-approve rejection tells the model why and lets it escalate that call to a human; an approval covers one retry with identical arguments.","set.humanReviewWarn":"Enabling this turns the approval dialog into a channel the model can trigger on its own (including while driven by untrusted content). Off by default.","set.humanReviewEnable":"Let the model request human review","set.humanReviewTool":"Tool name:","set.humanReviewToolHint":"Renaming takes effect after a dsh web restart.","set.humanReviewLang":"Notice language:","set.humanReviewOn":"Enabled","set.humanReviewOff":"Disabled","set.humanReviewSaved":"Human-review settings saved","denyReason.keyword":"red-line keyword","denyReason.criterion":"criteria table verdict","denyReason.payload-truncated":"the judge request exceeded its limit","denyReason.payload-uncaptured":"the arguments were not captured (plugin-side capture failure)","denyReason.judge-empty":"judge model produced no output","denyReason.judge-timeout":"judge model timed out","denyReason.judge-call":"judge model call failed","denyReason.judge-route":"no judge route available","denyReason.judge-unparsed":"judge output could not be classified","denyReason.plugin-error":"approval plugin errored","verdict.human-grant":"Retry allowed after approval","path.human-grant":"Retry allowed after approval","verdict.human-review":"Model-requested human review","path.human-review":"Model-requested human review","set.criterionId":"id","set.judgeTitle":"Judge model","set.judgeSubLead":"Empty follows the deployment default","set.judgeSubFallback":" ({provider} / {model})","set.judgeSubNoFallback":" (no default to follow)","set.followProvider":"Follow default provider","set.followModel":"Follow default model","set.modelDefaultEffort":"Model default","set.effortOff":"off (same as model default)","set.judgeProviderLabel":"Provider","set.judgeModelLabel":"Model","set.judgeEffortLabel":"Reasoning","set.judgeTimeoutMs":"Judge timeout (ms):","set.judgeRequestBudget":"Judge request limit (characters):","set.judgeRequestBudgetHint":"Measures the whole request (prompt + card); past it the call follows the action below — content is never cut in half for the judge.","set.judgeSelftest":"Test judgment","set.judgeSelftestBusy":"Testing…","set.judgeSelftestOk":"Judged: {ms}ms · category {category} · {chars} chars of text","set.judgeSelftestOkRetry":"Judged after a bigger retry budget: {ms}ms · category {category} · {chars} chars of text","set.judgeSelftestFail":"Judgment failed: {detail}","set.judgeHealthWarn":"{n} judgments this run went to a human because the judge model produced no text (reasoning consumed the output budget); the bigger retry budget saved {ok} of the retries. If it keeps happening, switch to a judge model that does not think — see the README.","err.judgeRequestBudgetRange":"The judge request limit must be between 8192 and 1000000","set.judgeSaved":"Judge settings saved","set.judgeLangZh":"Chinese","set.judgeLangEn":"English","set.judgePrompt":"Judge prompt","set.judgePromptLang":"Current language: {lang}","set.judgePromptHint":"{{criteria}} / {{levels}} are the insertion points; saved with the judge model.","set.langByRestore":"The language is chosen when you restore defaults.","set.judgePromptCustom":"Custom","set.judgePromptUnsaved":"Unsaved","set.judgePromptDefault":"Default","set.resetJudgePromptZh":"Restore Chinese default prompt","set.resetJudgePromptEn":"Restore English default prompt","set.resetJudgePromptOk":"Restored {lang} default prompt","set.overwriteOk":"Corrupt plugin config overwritten","err.missingPayloadUncaptured":"Tool arguments were not captured","err.truncatedPayload":"Judge request exceeded its limit (never judge what was not fully seen)","err.pluginError":"Plugin error","err.allowlistCorrupt":"Rules file is corrupt; refusing to overwrite. Restore defaults or fix allowlist.json on disk.","err.allowlistWrite":"Failed to write allowlist","err.criterionNotFound":"Criterion not found","err.criterionNeedId":"An English id is required (letters, digits, -, _)","err.criterionNeedDesc":"A description is required: state when to pick this id","err.criterionIdExists":"id already exists","err.criterionOtherLocked":"“Other” cannot be deleted","err.criteriaOp":"Criteria accept add / set / remove / reset","err.criterionLevel":"A cell action must be allow, reject, or human","err.levelNeedDesc":"The level description cannot be empty","err.levelFallback":"The fallback level must be low, medium, or high","err.levelNotFound":"No such risk level","err.levelsOp":"Risk levels accept set / reset","err.invalidAction":"Must be human or reject","err.opMustSet":"{kind} only accepts set","err.invalidNumber":"Invalid number","err.keywordEmpty":"Keyword cannot be empty","err.keywordNotFound":"Keyword not found","err.keywordsOp":"Keywords accept add / set / remove / reset","err.valueEmpty":"Value cannot be empty","err.unknownKind":"Unknown rule kind: {kind}","err.unknownOp":"Unknown operation: {op}","err.ruleNotFound":"No matching rule","err.badBody":"Request body is not JSON","err.needSessionId":"sessionId is required","err.pluginCorrupt":"Plugin config is corrupt; refusing to overwrite. Fix the file on disk, or overwrite the corrupt config.","err.pluginWrite":"Failed to write plugin config","err.unknownEndpoint":"Unknown endpoint: {endpoint}","err.internal":"Internal error: {error}","err.catalog":"Could not list models: {error}","err.info":"Could not load model info: {error}","err.judgeUnconfigured":"Judge model is not configured","err.judgeEffort":"reasoningEffort {effort} is not supported","err.judgeTimeout":"Judge timed out ({ms}ms)","err.judgeRetryTimeout":"Judge retry timed out ({ms}ms)","err.judgeFailed":"Judge failed","err.judgeCall":"Judge call failed: {error}","err.judgeEmpty":"Judge output was empty","err.judgePromptTooLong":"Custom prompt is too long ({chars} / limit {max} characters). It is not saved truncated: trim it yourself, or the output-format and level requirements at the tail will be lost.","err.judgeUpstream":"Judge route failed: {error}","err.noPresetsKey":"The permission entry has no presets key; add it manually","err.preset":"Failed to write preset: {error}","err.presetSandboxMissing":"The preset has no sandbox line; cannot set the sandbox mode. Check the profile cordis.patch.yml","rpc.unavailable":"connection.rpc is unavailable","rpc.failed":"RPC failed"}`)
+    const ZH = JSON.parse(String.raw`{"slot.notice":"自动放行提示","slot.history":"审批","slot.settings":"自动审批","action.reject":"拒绝","action.allow":"允许","action.human":"人工","src.strict":"模型分类","src.bare":"只给了 id","src.fuzzy":"模糊兜底","src.none":"认不出","src.empty":"输出为空","src.timeout":"超时","src.call":"调用失败","src.route":"无可用路由","src.plugin":"插件异常","src.truncated":"超过送审上限","src.uncaptured":"没采集到参数","src.oversize":"撞收集护栏","sandbox.read-only":"只读","sandbox.workspace-write":"工作区可写","sandbox.danger-full-access":"全权限","source.web":"网页","verdict.keyword-allow":"关键词允许","verdict.keyword-reject":"关键词拒绝","verdict.keyword-human":"关键词转人工","verdict.criteria-reject":"审核表拒绝","verdict.criteria-allow":"审核表允许","verdict.criteria-human":"审核表转人工","verdict.judge-failed":"判定失败转人工","verdict.truncated-payload":"内容超过送审上限","verdict.plugin-error":"插件异常","verdict.human":"转人工","verdict.cancelled":"人工取消","verdict.unavailable":"审批不可用","path.keyword-reject":"关键词拒绝","path.keyword-allow":"关键词允许","path.keyword-human":"关键词转人工","path.criteria-reject":"审核表拒绝","path.criteria-allow":"审核表允许","path.criteria-human":"审核表转人工","path.judge-failed":"判定失败转人工","path.truncated-payload":"内容超过送审上限","path.plugin-error":"插件异常","notice.feedError":"审批提示暂时不可用","notice.feedErrorTag":"连接失败","notice.pendingTitle":"等待人工审批：{preview}","notice.pendingTag":"人工审批中","notice.webApproved":"人工审批通过：{preview}","notice.webApprovedTag":"人工审批通过","notice.rejectedTitle":"已拒绝：{preview}","notice.rejectedTag":"已拒绝","notice.cancelledTitle":"已取消人工审批：{preview}","notice.unavailableTitle":"审批不可用：{preview}","notice.autoTag":"自动放行 · {verdict}","notice.autoDefault":"自动放行","notice.rejectedDefault":"已拒绝","notice.hint":"提示","notice.close":"关闭","notice.feedLoadFailed":"审批提示加载失败，将自动重试","history.noSession":"未选择会话","history.loadFailed":"加载失败：{error}","history.loading":"加载中…","history.title":"审批","history.emptySub":"当前会话还没有审批记录","history.emptyHint":"自动放行与转人工都会出现在这里","history.sub":"最新在上 · 点开看命令与详情","history.tagAuto":"自动放行","history.tagPending":"转人工","history.tagAllow":"人工批准","history.tagReject":"人工拒绝","history.tagCancel":"人工取消","history.tagUnavailable":"审批不可用","history.unknownTool":"工具","detail.request":"请求","detail.audit":"审核","detail.command":"命令","detail.path":"路径","detail.description":"描述","detail.old":"原文","detail.new":"改成","detail.content":"写入内容","detail.code":"代码","detail.url":"URL","detail.query":"查询","detail.script":"脚本","detail.sql":"SQL","detail.prompt":"提示词","detail.input":"输入","detail.text":"文本","detail.body":"正文","detail.message":"消息","detail.pattern":"模式","detail.selector":"选择器","detail.arg":"参数","detail.argsOmitted":"存档中略过的字段","detail.argsMore":"还有 {n} 个字段（点开前未逐条展开）","detail.cwd":"工作目录","detail.workdir":"命令工作目录","detail.empty":"(空)","detail.truncated":"（共 {n} 字；尾部：…{tail}）","detail.alsoArgs":"（另有 {n} 个参数：{list}{rest}）","detail.alsoMore":"；还有 {n} 个未列出","detail.alsoArgsHidden":"（另有 {n} 个参数未列出）","detail.argsFirst":"（共 {n} 个参数，仅列前 {shown} 个）","detail.depthCut":"（更深层参数未展开）","detail.leafCut":"（参数过多，未全部展开）","detail.nestedTooDeep":"（参数嵌套过深，未展开）","detail.argsUncaptured":"⚠ 未采集到这次调用的参数：插件没拿到参数，审批记录里没有可展示的操作内容——批准等于同意一次你没看到内容的操作。","detail.sandbox":"沙箱","detail.justification":"模型理由","detail.pipe":"管道","detail.keyword":"关键词","detail.judgeModel":"审核模型","detail.judgeCategory":"审核类别","detail.judgeAction":"执行动作","detail.judgeLevel":"风险等级","detail.levelFallback":"（兜底档）","detail.judgeSrc":"判定来源","detail.judgeReason":"审核理由","detail.judgeError":"审核失败","detail.judgeRaw":"审核结果原文","detail.source":"来源","detail.judgeFailed":"判定失败（没跑成 → 固定转人工）","approval.autoVerdict":"自动判定：","set.title":"自动审批","set.intro":"需要审批的调用交审核模型判定（允许 / 拒绝等同网页按钮），拿不准则交回原人工审批框。详细说明见 README。","set.allowlistCorrupt":"规则文件损坏，当前是内存默认，普通保存不会覆盖磁盘。请修好 allowlist.json，或点「恢复默认」写回出厂规则。","set.pluginCorrupt":"插件配置损坏，拒绝保存以免清空审核模型。请修好 ~/.dsh/auto-approve/config.json，或","set.pluginCorruptOverwrite":"覆盖损坏配置","set.loading":"加载中…","set.loadFailed":"加载失败：{error}","set.resetConfirm":"再点一次确认恢复","set.presetMissingTitle":"权限预设","set.driftTitle":"权限预设表需要更新","set.driftBody":"DSH 出厂权限预设表多了 {keys}；patch 整块替换 config，这些预设不会自动出现。请更新插件或手工合并该行。","set.presetMissingSub":"插件启动时会写入 auto-approve。当前未检测到，可手动补写。","set.presetWrite":"写入权限预设","set.presetWriteNote":"写入后需重启 dsh web","set.presetWrote":"已写入，请重启 dsh web","set.modeTitle":"自动审批模式","set.modeWs":"工作区可写（推荐）","set.modeWsHint":"工作区内直接放行，越出工作区需审核。","set.modeRo":"只读","set.modeRoHint":"工作区内写操作也需审核。","set.modeHint":"点选即写入；改完需重启 dsh web，并重新选择「自动审批」。","set.save":"保存","set.hotOk":"已生效（热更新，无需重启）","set.modeSaved":"已写入。请重启 dsh web，并重新选择「自动审批」或开新会话","set.overview":"审批总览","set.overviewSub":"顺序：拒绝关键词 → 参数没采集到（无条件拒绝）→ 人工关键词 → 闸门（看不见这次操作）→ 允许关键词 → 审核模型；判定没跑成固定转人工。","set.stepKeywords":"关键词","set.stepCriteria":"审核表","set.stepJudge":"审核模型","set.counts":"三格合计 拒 {reject} · 人 {human} · 允 {allow}","set.kwCounts":"拒 {reject} · 人 {human} · 允 {allow}","set.criteriaCount":"{n} 项","set.followDefault":"跟随默认","set.unconfigured":"未配置","set.kwSub":"匹配工具名、命令、路径、工作目录与自定义工具的参数值；看不到写入内容与数字/布尔开关，那几类只能靠审核模型。","set.empty":"暂无","set.presetTag":"预置","set.kwEditTitle":"点击修改","set.kwPlaceholder":"新关键词","set.add":"添加","set.resetKeywords":"恢复默认关键词","set.resetKeywordsOk":"已恢复默认关键词","set.confirm":"确认","set.delete":"删除","set.criteriaSub":"模型只看 id 与说明（说明写清什么情况下选这个 id）；id 用英文，会显示在审批历史里。","set.descPlaceholder":"说明（什么情况下选这个 id）","set.criterionOtherNote":"不能删除；说明与三格和其它行一样可改","set.resetCriteriaZh":"恢复中文默认审核表","set.resetCriteriaEn":"恢复英文默认审核表","set.resetCriteriaOk":"已恢复为{lang}默认审核表","set.addCriterion":"添加审核项","set.criteriaLangNote":"恢复默认会同时切换提示词语言","set.levelsTitle":"风险等级","set.levelsSub":"三档说明都会送进提示词。","set.levelFallback":"等级认不出时按：","set.levelFallbackHint":"模型没给等级或给了认不出的词时用它：兜底 high 直接拒绝，low 自动放行。","set.levelDescPlaceholder":"等级说明（什么情况算这一档）","set.resetLevelsZh":"恢复中文默认等级","set.resetLevelsEn":"恢复英文默认等级","set.resetLevelsOk":"已恢复为{lang}默认等级说明","set.truncatedAction":"超过送审上限 / 撞收集护栏：","set.humanReviewTitle":"模型转人工","set.humanReviewSub":"自动拒绝时把原因告诉模型，并允许它把这次操作转人工；批准只对同参数的一次重试有效。","set.humanReviewWarn":"开启后人工审批框成为模型可主动触发的通道（包括它被不可信内容驱动时）。默认关闭。","set.humanReviewEnable":"允许模型请求人工复核","set.humanReviewTool":"工具名：","set.humanReviewToolHint":"改完需重启 dsh web 才换名。","set.humanReviewLang":"提示语言：","set.humanReviewOn":"已开启","set.humanReviewOff":"已关闭","set.humanReviewSaved":"模型转人工设置已保存","denyReason.keyword":"关键词红线","denyReason.criterion":"审核表判定","denyReason.payload-truncated":"内容超过送审上限","denyReason.payload-uncaptured":"没采集到参数（插件侧采集故障）","denyReason.judge-empty":"审核模型没有输出","denyReason.judge-timeout":"审核模型超时","denyReason.judge-call":"审核模型调用失败","denyReason.judge-route":"没有可用审核路由","denyReason.judge-unparsed":"审核输出无法归类","denyReason.plugin-error":"审核插件异常","verdict.human-grant":"人工批准后重试放行","path.human-grant":"人工批准后重试放行","verdict.human-review":"模型请求人工复核","path.human-review":"模型请求人工复核","set.criterionId":"id","set.judgeTitle":"审核模型","set.judgeSubLead":"空则跟随部署默认","set.judgeSubFallback":"（{provider} / {model}）","set.judgeSubNoFallback":"（当前没有默认可跟随）","set.followProvider":"跟随默认提供方","set.followModel":"跟随默认模型","set.modelDefaultEffort":"模型默认","set.judgeProviderLabel":"提供方","set.judgeModelLabel":"模型","set.judgeEffortLabel":"思考强度","set.judgeTimeoutMs":"审核超时(ms)：","set.judgeRequestBudget":"送审内容上限(字符)：","set.judgeRequestBudgetHint":"量的是整条请求（提示词 + 卡片）；超了就按下面选的动作处理，不会切一半送审。","set.judgeMaxTokens":"输出预算(token)：","set.judgeMaxTokensHint":"会推理时的首轮输出上限，默认 8192；给少了推理会吃光预算 → 空输出 → 白跑一次重试。上限不是预扣，给足不会变慢；不推理的路由固定 256。","set.judgeSelftest":"测试判定","set.judgeSelftestBusy":"测试中…","set.judgeSelftestOk":"判定成功：{ms}ms · 类别 {category} · 正文 {chars} 字","set.judgeSelftestOkRetry":"换大预算后判定成功：{ms}ms · 类别 {category} · 正文 {chars} 字","set.judgeSelftestFail":"判定失败：{detail}","set.judgeHealthWarn":"本次运行 {n} 次判定因输出为空而转人工（推理吃光输出预算），换大预算救回 {ok} 次；仍然如此请换一个不思考的审核模型，详见 README。","err.judgeRequestBudgetRange":"送审内容上限需要在 8192 到 1000000 之间","err.judgeMaxTokensRange":"输出预算需要在 256 到 32768 之间","set.judgeSaved":"审核设置已保存","set.judgeLangZh":"中文","set.judgeLangEn":"English","set.judgePrompt":"审核提示词","set.judgePromptLang":"当前语言：{lang}","set.judgePromptHint":"{{criteria}} / {{levels}} 为插入点；与审核模型一起保存。","set.langByRestore":"语言只在「恢复默认」时选择。","set.judgePromptCustom":"已自定义","set.judgePromptUnsaved":"未保存","set.judgePromptDefault":"默认","set.resetJudgePromptZh":"恢复中文默认提示词","set.resetJudgePromptEn":"恢复英文默认提示词","set.resetJudgePromptOk":"已恢复{lang}默认提示词","set.overwriteOk":"已覆盖损坏的插件配置","err.missingPayloadUncaptured":"没拿到工具参数（未捕获）","err.truncatedPayload":"送审内容超过上限（禁止不看全就判定）","err.pluginError":"插件判定异常","err.allowlistCorrupt":"规则文件损坏，拒绝覆盖。请先「恢复默认」写回出厂规则，或修好磁盘上的 allowlist.json","err.allowlistWrite":"写入 allowlist 失败","err.criterionNotFound":"未找到该审核项","err.criterionNeedId":"需要英文 id（字母、数字、-、_）","err.criterionNeedDesc":"需要说明：写清什么情况下选这个 id","err.criterionIdExists":"id 已存在","err.criterionOtherLocked":"「其他」不可删除","err.criteriaOp":"审核表请用添加 / 修改 / 删除 / 恢复默认","err.criterionLevel":"三格动作只能是 允许 / 拒绝 / 人工","err.levelNeedDesc":"等级说明不能为空","err.levelFallback":"兜底档只能是 low / medium / high","err.levelNotFound":"未找到该风险等级","err.levelsOp":"风险等级请用修改 / 恢复默认","err.invalidAction":"只能是「转人工」或「拒绝」","err.opMustSet":"{kind} 只能用修改操作","err.invalidNumber":"无效数值","err.keywordEmpty":"关键词不能为空","err.keywordNotFound":"未找到该关键词","err.keywordsOp":"关键词请用添加 / 修改 / 删除 / 恢复默认","err.valueEmpty":"值不能为空","err.unknownKind":"未知规则类型：{kind}","err.unknownOp":"未知操作：{op}","err.ruleNotFound":"未找到匹配的规则","err.badBody":"请求体不是 JSON","err.needSessionId":"需要 sessionId","err.pluginCorrupt":"插件配置损坏，拒绝覆盖。请修好磁盘文件，或点「覆盖损坏配置」","err.pluginWrite":"写入配置失败","err.unknownEndpoint":"未知接口：{endpoint}","err.internal":"内部错误：{error}","err.catalog":"无法列出模型：{error}","err.info":"无法读取模型信息：{error}","err.judgeUnconfigured":"未配置审核模型","err.judgeEffort":"思考强度 {effort} 不受支持","err.judgeTimeout":"审核超时（{ms}ms）","err.judgeRetryTimeout":"审核重试超时（{ms}ms）","err.judgeFailed":"审核失败","err.judgeCall":"审核模型调用失败：{error}","err.judgeEmpty":"审核模型输出为空","err.judgePromptTooLong":"自定义提示词过长（{chars} / 上限 {max} 字符）。提示词不会被截断保存：请自己删到上限以内再保存，否则尾巴里的输出格式与等级要求会丢失。","err.judgeUpstream":"审核模型路由失败：{error}","err.noPresetsKey":"permission 条目缺少 presets 键，请手动添加","err.preset":"写入预设失败：{error}","err.presetSandboxMissing":"预设里没有 sandbox 行，无法写入沙箱模式；请检查 profile 的 cordis.patch.yml","err.presetSandbox":"沙箱模式只能是 read-only / workspace-write / danger-full-access（收到的值认不出）","rpc.unavailable":"connection.rpc 不可用","rpc.failed":"RPC 失败"}`)
+    const EN = JSON.parse(String.raw`{"slot.notice":"Auto-approve notice","slot.history":"Approvals","slot.settings":"Auto-approve","action.reject":"Reject","action.allow":"Allow","action.human":"Human","src.strict":"judge category","src.bare":"bare id","src.fuzzy":"fuzzy match","src.none":"unparsed","src.empty":"empty output","src.timeout":"timeout","src.call":"call failed","src.route":"no route","src.plugin":"plugin error","src.truncated":"judge request over budget","src.uncaptured":"arguments not captured","src.oversize":"collection guard hit","sandbox.read-only":"Read-only","sandbox.workspace-write":"Workspace write","sandbox.danger-full-access":"Full access","source.web":"Web","verdict.keyword-allow":"Keyword allow","verdict.keyword-reject":"Keyword reject","verdict.keyword-human":"Keyword → human","verdict.criteria-reject":"Criteria reject","verdict.criteria-allow":"Criteria allow","verdict.criteria-human":"Criteria → human","verdict.judge-failed":"Judge failed → human","verdict.truncated-payload":"Judge request over budget","verdict.plugin-error":"Plugin error","verdict.human":"To human","verdict.cancelled":"Human cancel","verdict.unavailable":"Unavailable","path.keyword-reject":"Keyword reject","path.keyword-allow":"Keyword allow","path.keyword-human":"Keyword → human","path.criteria-reject":"Criteria reject","path.criteria-allow":"Criteria allow","path.criteria-human":"Criteria → human","path.judge-failed":"Judge failed → human","path.truncated-payload":"Judge request over budget","path.plugin-error":"Plugin error","notice.feedError":"Approval notices unavailable","notice.feedErrorTag":"Connection failed","notice.pendingTitle":"Waiting for human: {preview}","notice.pendingTag":"Human review","notice.webApproved":"Approved: {preview}","notice.webApprovedTag":"Approved","notice.rejectedTitle":"Rejected: {preview}","notice.rejectedTag":"Rejected","notice.cancelledTitle":"Cancelled: {preview}","notice.unavailableTitle":"Unavailable: {preview}","notice.autoTag":"Auto-allowed · {verdict}","notice.autoDefault":"Auto-allowed","notice.rejectedDefault":"Rejected","notice.hint":"Notice","notice.close":"Dismiss","notice.feedLoadFailed":"Approval notices failed to load; retrying","history.noSession":"No session selected","history.loadFailed":"Failed to load: {error}","history.loading":"Loading…","history.title":"Approvals","history.emptySub":"This session has no approval records yet","history.emptyHint":"Auto-allows and human escalations appear here","history.sub":"Newest first · expand for command and details","history.tagAuto":"Auto-allowed","history.tagPending":"To human","history.tagAllow":"Human allow","history.tagReject":"Human reject","history.tagCancel":"Human cancel","history.tagUnavailable":"Unavailable","history.unknownTool":"Tool","detail.request":"Request","detail.audit":"Review","detail.command":"Command","detail.path":"Path","detail.description":"Description","detail.old":"Original","detail.new":"Replacement","detail.content":"Write contents","detail.code":"Code","detail.url":"URL","detail.query":"Query","detail.script":"Script","detail.sql":"SQL","detail.prompt":"Prompt","detail.input":"Input","detail.text":"Text","detail.body":"Body","detail.message":"Message","detail.pattern":"Pattern","detail.selector":"Selector","detail.arg":"Argument","detail.argsOmitted":"Fields omitted from this archive record","detail.argsMore":"{n} more fields (not expanded one by one)","detail.cwd":"Working directory","detail.workdir":"Command working directory","detail.empty":"(empty)","detail.truncated":" ({n} chars total; tail: …{tail})","detail.alsoArgs":" (also {n} args: {list}{rest})","detail.alsoMore":"; +{n} not shown","detail.alsoArgsHidden":" ({n} more args not shown)","detail.argsFirst":" ({n} args total; first {shown} shown)","detail.depthCut":" (deeper arguments not expanded)","detail.leafCut":" (too many arguments; not all expanded)","detail.nestedTooDeep":"(arguments nested too deeply; not expanded)","detail.argsUncaptured":"⚠ Arguments for this call were NOT captured: the plugin never received them, so this record has no operation to show — approving means allowing an operation whose content you did not see.","detail.sandbox":"Sandbox","detail.justification":"Model justification","detail.pipe":"Pipeline","detail.keyword":"Keyword","detail.judgeModel":"Judge model","detail.judgeCategory":"Category","detail.judgeAction":"Action","detail.judgeLevel":"Risk level","detail.levelFallback":" (fallback)","detail.judgeSrc":"Verdict source","detail.judgeReason":"Judge reason","detail.judgeError":"Judge error","detail.judgeRaw":"Judge raw output","detail.source":"Source","detail.judgeFailed":"judgment failed (no verdict → always asks a human)","approval.autoVerdict":"Machine verdict: ","set.title":"Auto-approve","set.intro":"Calls that need approval go to the judge model (allow / reject match the Web buttons); anything uncertain goes back to the original human dialog. Full details are in the README.","set.allowlistCorrupt":"The rules file is corrupt. This process is using in-memory defaults and will not overwrite the disk. Repair allowlist.json, or Restore defaults to write shipped rules.","set.pluginCorrupt":"Plugin config is corrupt; saves are refused so the judge model is not wiped. Repair ~/.dsh/auto-approve/config.json, or ","set.pluginCorruptOverwrite":"Overwrite corrupt config","set.loading":"Loading…","set.loadFailed":"Failed to load: {error}","set.resetConfirm":"Click again to confirm restore","set.presetMissingTitle":"Permission preset","set.driftTitle":"Permission preset table needs updating","set.driftBody":"The shipped permission table has new presets: {keys}. A patch replaces the permission config wholesale, so they will not appear automatically. Update the plugin or merge that row by hand.","set.presetMissingSub":"Startup writes auto-approve. It was not detected; you can write it now.","set.presetWrite":"Write permission preset","set.presetWriteNote":"Restart dsh web after writing","set.presetWrote":"Written. Restart dsh web","set.modeTitle":"Auto-approve mode","set.modeWs":"Workspace write (recommended)","set.modeWsHint":"In-workspace writes skip approval; outside the workspace still goes through the judge.","set.modeRo":"Read-only","set.modeRoHint":"In-workspace writes also go through the judge.","set.modeHint":"Clicking a mode writes it; restart dsh web and re-select Auto-approve.","set.save":"Save","set.hotOk":"Applied (live; no restart)","set.modeSaved":"Written. Restart dsh web and re-select Auto-approve or start a new session","set.overview":"Approval overview","set.overviewSub":"Order: reject keywords → arguments not captured (always rejected) → human keywords → the gate (call not visible) → allow keywords → judge model; a judgment that never ran always asks a human.","set.stepKeywords":"Keywords","set.stepCriteria":"Criteria","set.stepJudge":"Judge model","set.counts":"3 cells: rej {reject} · hum {human} · all {allow}","set.kwCounts":"rej {reject} · hum {human} · all {allow}","set.criteriaCount":"{n} rows","set.followDefault":"Follow default","set.unconfigured":"Not configured","set.kwSub":"Matches tool name, command, path, workdir, and the arguments of custom tools; written contents and numeric/boolean switches are not visible — only the judge model sees those.","set.empty":"None","set.presetTag":"Shipped","set.kwEditTitle":"Click to edit","set.kwPlaceholder":"New keyword","set.add":"Add","set.resetKeywords":"Restore default keywords","set.resetKeywordsOk":"Default keywords restored","set.confirm":"Confirm","set.delete":"Delete","set.criteriaSub":"The judge sees only the id and description (state when to pick this id); use an English id — it is shown in the approval history.","set.descPlaceholder":"Description (when to pick this id)","set.criterionOtherNote":"Cannot be deleted; description and cells are editable like any other row","set.resetCriteriaZh":"Restore Chinese default criteria","set.resetCriteriaEn":"Restore English default criteria","set.resetCriteriaOk":"Restored {lang} default criteria","set.addCriterion":"Add criterion","set.criteriaLangNote":"Restoring defaults also switches the prompt language","set.levelsTitle":"Risk levels","set.levelsSub":"All three descriptions go into the prompt.","set.levelFallback":"When the level is unreadable, use:","set.levelFallbackHint":"Used when the model omits the level or returns a word outside the vocabulary: a high fallback rejects such calls, low allows them.","set.levelDescPlaceholder":"Level description (what counts as this level)","set.resetLevelsZh":"Restore Chinese default levels","set.resetLevelsEn":"Restore English default levels","set.resetLevelsOk":"Restored {lang} default level descriptions","set.truncatedAction":"Over the judge limit / guard hit:","set.humanReviewTitle":"Model-initiated human review","set.humanReviewSub":"Every auto-approve rejection tells the model why and lets it escalate that call to a human; an approval covers one retry with identical arguments.","set.humanReviewWarn":"Enabling this turns the approval dialog into a channel the model can trigger on its own (including while driven by untrusted content). Off by default.","set.humanReviewEnable":"Let the model request human review","set.humanReviewTool":"Tool name:","set.humanReviewToolHint":"Renaming takes effect after a dsh web restart.","set.humanReviewLang":"Notice language:","set.humanReviewOn":"Enabled","set.humanReviewOff":"Disabled","set.humanReviewSaved":"Human-review settings saved","denyReason.keyword":"red-line keyword","denyReason.criterion":"criteria table verdict","denyReason.payload-truncated":"the judge request exceeded its limit","denyReason.payload-uncaptured":"the arguments were not captured (plugin-side capture failure)","denyReason.judge-empty":"judge model produced no output","denyReason.judge-timeout":"judge model timed out","denyReason.judge-call":"judge model call failed","denyReason.judge-route":"no judge route available","denyReason.judge-unparsed":"judge output could not be classified","denyReason.plugin-error":"approval plugin errored","verdict.human-grant":"Retry allowed after approval","path.human-grant":"Retry allowed after approval","verdict.human-review":"Model-requested human review","path.human-review":"Model-requested human review","set.criterionId":"id","set.judgeTitle":"Judge model","set.judgeSubLead":"Empty follows the deployment default","set.judgeSubFallback":" ({provider} / {model})","set.judgeSubNoFallback":" (no default to follow)","set.followProvider":"Follow default provider","set.followModel":"Follow default model","set.modelDefaultEffort":"Model default","set.judgeProviderLabel":"Provider","set.judgeModelLabel":"Model","set.judgeEffortLabel":"Reasoning","set.judgeTimeoutMs":"Judge timeout (ms):","set.judgeRequestBudget":"Judge request limit (characters):","set.judgeRequestBudgetHint":"Measures the whole request (prompt + card); past it the call follows the action below — content is never cut in half for the judge.","set.judgeMaxTokens":"Output budget (tokens):","set.judgeMaxTokensHint":"First-attempt cap when the route may reason, default 8192; too small and reasoning eats the budget → empty output → one wasted retry. A cap is not a reservation, so a generous value costs no extra time; routes without reasoning stay at 256.","set.judgeSelftest":"Test judgment","set.judgeSelftestBusy":"Testing…","set.judgeSelftestOk":"Judged: {ms}ms · category {category} · {chars} chars of text","set.judgeSelftestOkRetry":"Judged after a bigger retry budget: {ms}ms · category {category} · {chars} chars of text","set.judgeSelftestFail":"Judgment failed: {detail}","set.judgeHealthWarn":"{n} judgments this run went to a human because the judge model produced no text (reasoning consumed the output budget); the bigger retry budget saved {ok} of the retries. If it keeps happening, switch to a judge model that does not think — see the README.","err.judgeRequestBudgetRange":"The judge request limit must be between 8192 and 1000000","err.judgeMaxTokensRange":"The output budget must be between 256 and 32768","set.judgeSaved":"Judge settings saved","set.judgeLangZh":"Chinese","set.judgeLangEn":"English","set.judgePrompt":"Judge prompt","set.judgePromptLang":"Current language: {lang}","set.judgePromptHint":"{{criteria}} / {{levels}} are the insertion points; saved with the judge model.","set.langByRestore":"The language is chosen when you restore defaults.","set.judgePromptCustom":"Custom","set.judgePromptUnsaved":"Unsaved","set.judgePromptDefault":"Default","set.resetJudgePromptZh":"Restore Chinese default prompt","set.resetJudgePromptEn":"Restore English default prompt","set.resetJudgePromptOk":"Restored {lang} default prompt","set.overwriteOk":"Corrupt plugin config overwritten","err.missingPayloadUncaptured":"Tool arguments were not captured","err.truncatedPayload":"Judge request exceeded its limit (never judge what was not fully seen)","err.pluginError":"Plugin error","err.allowlistCorrupt":"Rules file is corrupt; refusing to overwrite. Restore defaults or fix allowlist.json on disk.","err.allowlistWrite":"Failed to write allowlist","err.criterionNotFound":"Criterion not found","err.criterionNeedId":"An English id is required (letters, digits, -, _)","err.criterionNeedDesc":"A description is required: state when to pick this id","err.criterionIdExists":"id already exists","err.criterionOtherLocked":"“Other” cannot be deleted","err.criteriaOp":"Criteria accept add / set / remove / reset","err.criterionLevel":"A cell action must be allow, reject, or human","err.levelNeedDesc":"The level description cannot be empty","err.levelFallback":"The fallback level must be low, medium, or high","err.levelNotFound":"No such risk level","err.levelsOp":"Risk levels accept set / reset","err.invalidAction":"Must be human or reject","err.opMustSet":"{kind} only accepts set","err.invalidNumber":"Invalid number","err.keywordEmpty":"Keyword cannot be empty","err.keywordNotFound":"Keyword not found","err.keywordsOp":"Keywords accept add / set / remove / reset","err.valueEmpty":"Value cannot be empty","err.unknownKind":"Unknown rule kind: {kind}","err.unknownOp":"Unknown operation: {op}","err.ruleNotFound":"No matching rule","err.badBody":"Request body is not JSON","err.needSessionId":"sessionId is required","err.pluginCorrupt":"Plugin config is corrupt; refusing to overwrite. Fix the file on disk, or overwrite the corrupt config.","err.pluginWrite":"Failed to write plugin config","err.unknownEndpoint":"Unknown endpoint: {endpoint}","err.internal":"Internal error: {error}","err.catalog":"Could not list models: {error}","err.info":"Could not load model info: {error}","err.judgeUnconfigured":"Judge model is not configured","err.judgeEffort":"reasoningEffort {effort} is not supported","err.judgeTimeout":"Judge timed out ({ms}ms)","err.judgeRetryTimeout":"Judge retry timed out ({ms}ms)","err.judgeFailed":"Judge failed","err.judgeCall":"Judge call failed: {error}","err.judgeEmpty":"Judge output was empty","err.judgePromptTooLong":"Custom prompt is too long ({chars} / limit {max} characters). It is not saved truncated: trim it yourself, or the output-format and level requirements at the tail will be lost.","err.judgeUpstream":"Judge route failed: {error}","err.noPresetsKey":"The permission entry has no presets key; add it manually","err.preset":"Failed to write preset: {error}","err.presetSandboxMissing":"The preset has no sandbox line; cannot set the sandbox mode. Check the profile cordis.patch.yml","err.presetSandbox":"The sandbox mode must be read-only, workspace-write, or danger-full-access (the given value is unknown)","rpc.unavailable":"connection.rpc is unavailable","rpc.failed":"RPC failed"}`)
 
     function fillLocale(template, params) {
       if (!params) return template
@@ -204,8 +205,15 @@ window.__ModuleLoader__.load({
       return v === key ? '' : v
     }
 
+    /**
+     * 判决标签。**空 verdict 返回空串**，由调用点决定怎么兜底（通知条/历史行各有各的默认词）。
+     *
+     * 曾经这里直接返回「自动放行」，于是两个**拒绝分支**里的 `|| t('notice.rejectedDefault')`
+     * 成了死代码：一条没有 `verdict` 的自动拒绝行会按「已拒绝」渲染（红底 ✕、标题「已拒绝：…」），
+     * 标签却写「自动放行」，自相矛盾（第 9 轮 DOM 走查的复现：`ab-notice-card-err` + 标签「自动放行」）。
+     */
     function verdictLabel(t, verdict) {
-      if (!verdict) return t('notice.autoDefault')
+      if (!verdict) return ''
       return lookupLabel(t, 'verdict', verdict) || lookupLabel(t, 'path', verdict) || String(verdict)
     }
 
@@ -222,8 +230,17 @@ window.__ModuleLoader__.load({
       return lookupLabel(t, 'action', action) || (action ? String(action) : '')
     }
 
+    /**
+     * 风险等级一律**原样显示 id**（`low` / `medium` / `high`），不做本地化。
+     *
+     * 等级 id 是**模型契约**的一部分：提示词里的定义行是 `- low：说明`、模型要输出 `风险等级: low`、
+     * 审计行是 `level=low`、文件里是三格 `actions.low`。把它显示成「低」，用户改这一档说明时就得
+     * 自己把「低」映射回 `low`，出问题看审计时还要再映射一次。
+     * 动作 id（`allow`/`reject`/`human`）不一样：它只活在 allowlist 内部，从不进提示词、也不出现在
+     * 模型输出里，所以本地化成「允许 / 拒绝 / 人工」没有代价（`actionLabel` 保持不变）。
+     */
     function levelLabel(t, level) {
-      return lookupLabel(t, 'level', level) || (level ? String(level) : '')
+      return level ? String(level) : ''
     }
 
     function srcLabel(t, src) {
@@ -272,6 +289,314 @@ window.__ModuleLoader__.load({
       // 自定义工具（MCP）的参数名认不出：预览不能空着，否则条子上只剩理由一句话。
       const generic = Object.keys(a).filter(isExtraArgKey).sort().map((k) => a[k]).filter((v) => typeof v === 'string' && v)[0]
       return generic || ev.justification || ev.reason || ''
+    }
+
+    /**
+     * 原生审批框那一行详情的内容。**本插件接管了这个槽位**（见 `apply` 里的注册）：
+     * DSH 自带的 `ApprovalCommand` 只读那次调用的顶层 `args.command`，于是 `write` / `edit` /
+     * MCP 这类没有 `command` 的越权审批，人只看到一句「某工具要审批」——路径、内容、参数
+     * 一个都看不见，却要决定放不放行。
+     *
+     * 口径与宿主侧 `formatReviewOperation` 一致（两处不能 import，只能各自实现）：
+     * 命令优先 → 没有命令就按参数名列出前几个；**截断必须说出来**（总字数 / 还剩几个参数）。
+     * 解析不出对象就返回 null（渲染不出来就不渲染，别抛进别人的 UI）。
+     */
+    /**
+     * 已知参数名的**显示顺序**：与宿主 `rules.mjs` 的 `TOOL_ARG_KEYS` 逐项同序（两处不能
+     * 互相 import，只能各自维护，改一处要同步另一处）。宿主把投影按这个顺序拍平，所以
+     * 客户端按同一顺序取「前 4 个」才对得上模型看到的卡片。
+     */
+    const DETAIL_KEY_ORDER = [
+      'command', 'file_path', 'path', 'old_string', 'new_string', 'content', 'description', 'workdir',
+      'code', 'url', 'query', 'script', 'sql', 'prompt', 'input', 'text', 'body', 'message', 'pattern', 'selector',
+    ]
+
+    function approvalDetailText(argsRaw, max, t) {
+      const limit = Number(max) > 0 ? Number(max) : 600
+      // 文案走字典（网页文案源是 locales.mjs）：英文界面下不能出现「（共 N 字；尾部：…）」。
+      // 没传 `t` 时按 zh 渲染（测试与旧调用点）。
+      const tr = typeof t === 'function' ? t : function (key, params) { return fillLocale(ZH[key] || key, params) }
+      let args
+      try {
+        args = JSON.parse(String(argsRaw == null ? '' : argsRaw))
+      } catch (e) {
+        return null
+      }
+      if (!args || typeof args !== 'object' || Array.isArray(args)) return null
+      const oneLine = function (value) {
+        return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
+      }
+      const clipped = function (value, budget) {
+        const cap = typeof budget === 'number' && budget > 0 ? budget : limit
+        const text = oneLine(value)
+        if (text.length <= cap) return text
+        // 取整方式必须与宿主 `formatReviewOperation` 的 `clipped` 一致（`Math.floor`）：
+        // `Math.round` 会让头/尾各差一个字符，同一份参数在原生详情行与复核框里显示不同文本
+        //（2 万组随机对拍里 1017 组分歧，全是这个原因）。
+        const head = text.slice(0, Math.max(1, Math.floor(cap * 0.6)))
+        const tail = text.slice(-Math.max(1, Math.floor(cap * 0.2)))
+        return head + '…' + tr('detail.truncated', { n: text.length, tail: tail })
+      }
+      /**
+       * 本插件自己发的复核请求：那次调用的参数是 `{ tool, arguments, justification }` 包装层，
+       * 详情行要显示的是**被复核的操作本身**，不是包装（否则是 `arguments.command:` 这种噪声，
+       * 而 headline 已经写了「操作：…」）。判据收紧到「恰好这三个键」，免得误伤同形参数的普通工具。
+       */
+      const wrapped = args.arguments
+      const wrapKeys = Object.keys(args)
+      if (typeof args.tool === 'string'
+        && wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)
+        && wrapKeys.length === 3
+        && wrapKeys.indexOf('tool') !== -1 && wrapKeys.indexOf('arguments') !== -1 && wrapKeys.indexOf('justification') !== -1) {
+        args = wrapped
+      }
+      // 命令优先。`justification` 是模型自己的说辞（不是操作本体），与宿主侧卡片同一口径排除。
+      // 与宿主投影同一个口径：数字/布尔 `command` 在宿主那边已经被 `scalarToText` 收成文本进
+      // 命令位（`{command:true}` → `true`），客户端拿的是**原始**参数，不补齐就会一边显示命令、
+      // 另一边显示参数表（实测 470/20000 组输入不一致）。空/纯空白仍不算命令——`clipped('')`
+      // 会返回空串，详情行整行消失（负 priority 遮蔽了 DSH 自带那一行，人什么都看不到）。
+      const commandKind = typeof args.command === 'string'
+        ? 'text'
+        : ((typeof args.command === 'number' && Number.isFinite(args.command)) || typeof args.command === 'boolean' ? 'scalar' : 'none')
+      const commandValue = commandKind === 'text' ? args.command : (commandKind === 'scalar' ? String(args.command) : '')
+      // 顶层有命令位（哪怕为空）时宿主**不会**再提升嵌套的 `*.command`（它只按投影里那个
+      // `command` 键取值）：客户端继续全树搜会把 `{command:'', script:{command:'325'}}` 压成
+      // 「325」——同一份参数两种「操作」摘要，还把其它参数挤掉。
+      const mayPromoteNested = commandKind === 'none'
+      // 拍平嵌套（MCP 常把参数包在 params/arguments 里），叶子取标量。
+      //
+      // 叶子清单必须**先算**：命令位的「另有 N 个参数」披露要用同一份清单（含嵌套拍平），
+      // 否则宿主披露 `path.aa: /p` 而客户端只披露顶层标量——同一份参数两种摘要。
+      //
+      // 深度上限是**护栏**而不是口径（宿主侧 `pickToolArgsDetailed` 没有上限、靠字节护栏）：
+      // 超过就把省略**写出来**，绝不静默少印——`{query:{filter:{term}}}` 这类调用宁可多一行说明。
+      const leaves = []
+      const usedKeys = Object.create(null)
+      let depthCut = false
+      let leafCut = false
+      // 叶子上限是**护栏**而不是口径，撞到就写出来（`detail.leafCut`），绝不静默少印。
+      const MAX_LEAVES = 500
+      const push = function (key, value, rank) {
+        // 撞车键要带 `#2` 后缀另起一格（宿主投影是这么做的）：裸键名会让两行同名、读者分不清
+        // 哪一行是哪个参数。
+        // `__proto__` 与宿主投影同名（`keep()` 会改名成 `__proto__#raw`）：同一次调用
+        // 两处显示同一个名字，人才不会以为是两个参数。
+        let slot = key === '__proto__' ? '__proto__#raw' : key
+        let n = 1
+        while (usedKeys[slot]) { n += 1; slot = (key === '__proto__' ? '__proto__#raw' : key) + '#' + n }
+        usedKeys[slot] = true
+        leaves.push({ key: slot, value: value, rank: rank === undefined ? -1 : rank })
+      }
+      const walk = function (node, path, depth) {
+        if (!node || typeof node !== 'object') return
+        if (depth > 4) { depthCut = true; return }
+        // 键序与宿主**投影**同源（两处不能互相 import）：顶层字符串键按 `TOOL_ARG_KEYS`
+        // 的顺序在前，其余（嵌套叶子、未知键、非字符串值）按原始键序在后——只按自己的优先表
+        // 排序会让「前 4 个」选中与卡片不同的参数。
+        const keys = Object.keys(node)
+        for (let i = 0; i < keys.length; i++) {
+          const key = keys[i]
+          if (key === 'justification') continue
+          const value = node[key]
+          const full = path ? path + '.' + key : key
+          if (value && typeof value === 'object') { walk(value, full, depth + 1); continue }
+          if (value === null || value === undefined || typeof value === 'function') continue
+          if (leaves.length >= MAX_LEAVES) { leafCut = true; return }
+          const rank = !path && typeof value === 'string' ? DETAIL_KEY_ORDER.indexOf(key) : -1
+          push(full, String(value), rank)
+        }
+      }
+      walk(args, '', 0)
+      /**
+       * 分两桶（与宿主投影一致）：顶层字符串键按 `TOOL_ARG_KEYS` 序、其余按原顺序。
+       * 用稳定排序 + 原始下标做次级键，桶内保持 `Object.keys` 的顺序。
+       */
+      leaves.forEach(function (leaf, i) { leaf.i = i })
+      leaves.sort(function (a, b) {
+        const ra = a.rank === -1 ? Number.MAX_SAFE_INTEGER : a.rank
+        const rb = b.rank === -1 ? Number.MAX_SAFE_INTEGER : b.rank
+        return ra === rb ? a.i - b.i : ra - rb
+      })
+      /**
+       * 命令 + **其余叶子全部交代**：凭证按完整参数投影签发，只印命令等于让人替看不见的字段签字
+       * （实测 `{command:'echo ok', file_path:'/etc/shadow', content:'SECRET'}` 只显示「操作：echo ok」）。
+       * 披露用的就是上面那份叶子清单（与参数表同一口径，含嵌套拍平）；命令让出小半预算，
+       * 放不下时至少说出数量。`excludeKey` 是被提到命令位的那片叶子（顶层 `command` 或某个 `*.command`）。
+       */
+      const clip60 = function (value) {
+        const text2 = oneLine(value)
+        return text2.length > 60 ? text2.slice(0, 59) + '…' : text2
+      }
+      const withDisclosure = function (headText, excludeKey) {
+        const others = leaves
+          .filter(function (leaf) { return leaf.key !== excludeKey })
+          .map(function (leaf) { return leaf.key + ': ' + clip60(leaf.value) })
+        if (!others.length) return clipped(headText)
+        const tailFor = function (count, restCount) {
+          return count > 0
+            ? tr('detail.alsoArgs', { n: others.length, list: others.slice(0, count).join('；'), rest: restCount > 0 ? tr('detail.alsoMore', { n: restCount }) : '' })
+            : tr('detail.alsoArgsHidden', { n: others.length })
+        }
+        /**
+         * **整条（命令 + 披露）必须 ≤ limit**：详情行是唯一的展示位，而披露在尾巴上——命令一长，
+         * 被切掉的正好是「另有 N 个参数」这句（实测 595 字命令 + 2 个参数 = 608 字，尾巴被截掉），
+         * 人就会以为命令之外没有别的参数。从「列出最多参数」往回收，取第一个放得下的组合。
+         * 宿主 `formatReviewOperation` 同一形状、同一改法（两处不能互相 import）。
+         */
+        for (let count = others.length; count >= 0; count--) {
+          const tail = tailFor(count, others.length - count)
+          const room = limit - tail.length - 24
+          if (room < 24) continue
+          return (clipped(headText, room) + tail).replace(/[ \t]+$/, '')
+        }
+        return clipped(headText)
+      }
+      if (commandValue.trim() !== '') return withDisclosure(commandValue, 'command')
+      // 嵌套里的命令也是命令：MCP 习惯把参数包一层（`params.command`），宿主侧
+      // `formatReviewOperation` 明确做这个提升（两处口径必须一致），这里同样优先显示它，
+      // 否则正文一长，命令就会被挤出「只列前 4 个」那一截——人看不到自己要批准的命令。
+      // 只认**真正嵌套**的命令（`params.command` 这种），且按宿主同一个取法：键名排序取第一个
+      // （`Object.keys(a).filter(k => k.endsWith('.command')).sort()[0]`）。顶层 `command` 在
+      // 上面已经处理过——把它也算进来时，空串会被「提升」成空详情行，原生框里人什么都看不到。
+      const nestedCommand = mayPromoteNested
+        ? leaves
+          .filter(function (leaf) { return /\.command$/.test(leaf.key) })
+          .sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0) })[0]
+        : undefined
+      if (nestedCommand && nestedCommand.value.trim() !== '') return withDisclosure(nestedCommand.value, nestedCommand.key)
+      if (!leaves.length) {
+        return depthCut ? tr('detail.nestedTooDeep') : null
+      }
+      const shown = leaves.slice(0, 4)
+      // 与宿主同一个口径：宿主把整串过 `oneLine`（折叠空白 + trim），所以 `key: ` 后面没有值时
+      // 那行末尾不留空格；这里逐行去掉行尾空白（`white-space: pre-line` 下不可见，但两处文本要能逐字对拍）。
+      const text = shown.map(function (leaf) {
+        const value = oneLine(leaf.value)
+        const cut = value.length > 80 ? value.slice(0, 79) + '…' : value
+        // 空值的行印成 `key:`（不留行尾空格）——宿主对空值是同一个形状，两侧除分隔符外逐字一致。
+        return (leaf.key + ': ' + cut).replace(/[ \t]+$/, '')
+      }).join('\n')
+      const more = leaves.length - shown.length
+      const suffix = (more > 0 ? tr('detail.argsFirst', { n: leaves.length, shown: shown.length }) : '')
+        + (depthCut ? tr('detail.depthCut') : '')
+        + (leafCut ? tr('detail.leafCut') : '')
+      // 注意：这里**不能**过 `clipped()`——它的 `oneLine` 会把换行折成空格，多行参数表就没了。
+      // 每个值已经单独单行化并裁剪过，这里只在整体超长时按字裁并交代总量。
+      // **披露先占预算**，剩下的才是参数表的：裁到哪儿、报多少字都必须与宿主逐字一致
+      // （宿主在同一份换行连接的规范字符串上算，只是显示时把换行换成 ` · `）。
+      const room = Math.max(0, limit - suffix.length)
+      if (text.length > room) {
+        const head = text.slice(0, Math.max(1, Math.floor(room * 0.6)))
+        const tail = text.slice(-Math.max(1, Math.floor(room * 0.2)))
+        return head + '…' + tr('detail.truncated', { n: text.length, tail: tail }) + suffix
+      }
+      return text + suffix
+    }
+
+    /**
+     * 事件行 → 「自动判定：…」那一行（审批框里给**人**看的）。
+     *
+     * 人是在接手/覆盖一个机器决定，得知道机器为什么。原生越权那条路的标题由请求方给、
+     * 插件不能改 `req`，所以这一行挂在详情行下：`keywords 转人工（命中的词）` /
+     * `审核表转人工 · 中` / `判定失败转人工` / `内容超过送审上限`。
+     * 事件里没有可用判定就返回空串（那就不写这一行，宁可少一句也不瞎写）。
+     */
+    function verdictLineFromEvent(t, ev) {
+      const e = ev && typeof ev === 'object' ? ev : null
+      if (!e) return ''
+      const path = String(e.path || e.verdict || '')
+      if (!path) return ''
+      // 复核框（模型主动求的那次）没有「机器的判定」可言：它的标题已经写清是模型求的复核，
+      // 再写一行「自动判定：模型请求人工复核」就是自指噪声。
+      if (path === 'human-review') return ''
+      // **判定压根没跑成**（src ∈ empty/timeout/call/route/plugin）时宿主走的仍是 criteria-human，
+      // 只按 path 出标签会显示成「审核表转人工」——人就看不出「模型一个字都没答」。
+      // 这条判据必须与宿主 `JUDGE_FAILURE_SRCS` 一致（两处不能互相 import，改一处要同步另一处）。
+      const src = String(e.src || '')
+      const failed = ['empty', 'timeout', 'call', 'route', 'plugin'].indexOf(src) !== -1
+      const label = failed ? (verdictLabel(t, 'judge-failed') || path) : (verdictLabel(t, path) || path)
+      // 等级可能在顶层（pending 行）或 `judge` 里（自动判定行）；历史行只有 `judge.level`。
+      const level = failed ? '' : (e.level || (e.judge && e.judge.level) || '')
+      const keyword = failed ? '' : String(e.keyword || '')
+      return t('approval.autoVerdict') + label
+        + (level ? ' · ' + levelLabel(t, level) : (keyword ? '（' + keyword + '）' : ''))
+    }
+
+    /**
+     * `sessionId:callId` → 那一行（进程内缓存：审批框每次挂载只查一次；有界）。
+     * **键必须带会话**：`callId` 只在会话内唯一，宿主自己的暂存映射也用
+     * `sessionId:callId`（「避免多会话共用 call-0 互相覆盖」）；只按 callId 键控时，
+     * 另一个会话出现同 id 就会把别人的旧判决显示成本次判定，而且命中缓存后不再发查询。
+     */
+    const approvalVerdictCache = new Map()
+    const verdictCacheKey = function (sessionId, callId) {
+      return String(sessionId || '') + ':' + String(callId || '')
+    }
+
+    /**
+     * 原生审批框的详情行。注册在 `conversation.approval.detail` 上、priority 取负值
+     * （同 priority 会报冲突，换 priority 则遮蔽，**越低越先渲染**），因此这里同时接管了
+     * 原来由 ui-chat 渲染的 bash 命令那一行：查不到那次调用就返回 null（与原来一致的降级）。
+     */
+    function ApprovalDetail(props) {
+      const sp = (props && props.slotsProps) || {}
+      const callId = sp.callId
+      const useChat = sp.useChat
+      const rpc = props && props.rpc
+      const t = props && props.t
+      // 判决那一行：按 callId 查一次事件（宿主侧 `events` 接口支持 callId 过滤），存进缓存。
+      // 查不到/失败就不写那一行——审批本身不受影响。
+      const frame = resolveFrame(sp)
+      const cacheKey = verdictCacheKey(frame.sessionId, callId)
+      const [verdict, setVerdict] = React.useState(function () {
+        return (callId && approvalVerdictCache.get(cacheKey)) || ''
+      })
+      React.useEffect(function () {
+        if (!callId || typeof rpc !== 'function') return undefined
+        if (approvalVerdictCache.has(cacheKey)) return undefined
+        if (!frame.sessionId) return undefined
+        let alive = true
+        rpc('events', { sessionId: frame.sessionId, callId: callId }).then(function (data) {
+          const rows = (data && data.events) || []
+          const line = verdictLineFromEvent(t, rows[rows.length - 1])
+          approvalVerdictCache.set(cacheKey, line)
+          while (approvalVerdictCache.size > 32) {
+            const oldest = approvalVerdictCache.keys().next()
+            if (oldest.done) break
+            approvalVerdictCache.delete(oldest.value)
+          }
+          if (alive) setVerdict(line)
+        }).catch(function () { /* 查不到就不写那一行 */ })
+        return function () { alive = false }
+      }, [cacheKey, callId, rpc])
+      // `useChat` 是会话级标准 props、审批框也只在 `callId` 存在时才渲染这个槽位，两者在一次挂载里
+      // 不会忽有忽无；但 hook 的调用**必须**保持在同一条路径上（不能因为 `callId` 缺失就提前 return），
+      // 否则同一实例两次渲染的 hooks 数量不同。判空一律放进选择器里。
+      const text = (typeof useChat === 'function')
+        ? useChat(function (snapshot) {
+        if (!callId) return null
+        try {
+          const nodes = (snapshot && snapshot.nodes) || null
+          if (!nodes || typeof nodes.values !== 'function') return null
+          for (const node of nodes.values()) {
+            if (!node || node.kind !== 'tool-call') continue
+            const root = node.data && node.data.root
+            if (!root || root.callId !== callId) continue
+            if ('kind' in root) continue
+            return approvalDetailText(root.argsRaw, 600, t)
+          }
+        } catch (e) {
+          return null
+        }
+        return null
+        })
+        : null
+      if (!text && !verdict) return null
+      return React.createElement('span', { className: 'ab-approval-detail' },
+        text || null,
+        text && verdict ? '\n' : null,
+        verdict || null,
+      )
     }
 
     function hasVal(value) {
@@ -727,6 +1052,9 @@ window.__ModuleLoader__.load({
       })
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
       const [judgeBudget, setJudgeBudget] = React.useState('20000')
+      // 首轮输出预算（`judge.maxTokens`）。默认值必须与服务端 JUDGE_MAX_TOKENS_REASONING 一致——
+      // client bundle 拿不到 Host 常量，所以这里写死 8192（区间同样写死 256..32768）。
+      const [judgeMaxTokens, setJudgeMaxTokens] = React.useState('8192')
       const [models, setModels] = React.useState([])
       const [efforts, setEfforts] = React.useState([])
       // 列表加载失败以前被 catch 吞掉，下拉里只剩「跟随默认模型」，看不出是失败还是真没有模型。
@@ -773,6 +1101,7 @@ window.__ModuleLoader__.load({
       const seedJudge = function (data, onlyLang) {
         setTimeoutMs(String(data.config.judgeTimeoutMs))
         setJudgeBudget(String((data.plugin && data.plugin.judgeRequestBudget) || 20000))
+        setJudgeMaxTokens(String((data.plugin && data.plugin.judge && data.plugin.judge.maxTokens) || 8192))
         setJudgeProvider((data.plugin.judge && data.plugin.judge.provider) || '')
         setJudgeModel((data.plugin.judge && data.plugin.judge.model) || '')
         setJudgeEffort((data.plugin.judge && data.plugin.judge.reasoningEffort) || '')
@@ -983,9 +1312,16 @@ window.__ModuleLoader__.load({
           showFeedback(t('err.judgeRequestBudgetRange'), false)
           return
         }
+        // 首轮输出预算：256..32768，与服务端 JUDGE_MAX_TOKENS_MIN/MAX 同一区间。
+        // 给少了推理会吃光预算 → 空输出 → 白跑一次重试（上限不是预扣，给足不会变慢）。
+        const m = Number(judgeMaxTokens)
+        if (!Number.isFinite(m) || m < 256 || m > 32768) {
+          showFeedback(t('err.judgeMaxTokensRange'), false)
+          return
+        }
         // 不带 judgePromptLang：语言只由两个「恢复默认」动作决定，保存设置不该动它。
         run('save-plugin', {
-          judge: { provider: judgeProvider, model: judgeModel, reasoningEffort: judgeEffort },
+          judge: { provider: judgeProvider, model: judgeModel, reasoningEffort: judgeEffort, maxTokens: Math.floor(m) },
           judgeTimeoutMs: n,
           judgeRequestBudget: Math.floor(b),
           judgePrompts: (function () {
@@ -1196,7 +1532,13 @@ window.__ModuleLoader__.load({
                         className: 'ab-set-kw-text',
                         title: t('set.kwEditTitle'),
                         'aria-label': t('set.kwEditTitle') + '：' + row.text,
-                        onClick: function () { setKwEdit(editKey) },
+                        onClick: function () {
+                          // Escape 之后那个「跳过 blur」标记可能还留着：浏览器在**移除聚焦元素**时
+                          // 不保证发 blur（Firefox 不发，标准也已移除该行为），残留的 true 会把
+                          // 下一次编辑的 blur 当成「刚被取消的那一次」静默吞掉——不提交、编辑器不关。
+                          kwSkipBlurRef.current = false
+                          setKwEdit(editKey)
+                        },
                       }, row.text),
                   preShipped.has(row.text) ? React.createElement('span', { className: 'ab-set-tag ab-set-tag-blue' }, t('set.presetTag')) : null,
                   React.createElement('select', {
@@ -1267,11 +1609,11 @@ window.__ModuleLoader__.load({
               const acts = c.actions || {}
               const cellOf = function (level) {
                 return React.createElement('span', { className: 'ab-set-cell', key: level },
-                  React.createElement('span', { className: 'ab-set-cell-lv' }, t('level.' + level)),
+                  React.createElement('span', { className: 'ab-set-cell-lv' }, level),
                   React.createElement('select', {
                     className: 'ab-set-select ab-set-select-sm',
                     value: acts[level] || 'human',
-                    'aria-label': c.id + ' · ' + t('level.' + level),
+                    'aria-label': c.id + ' · ' + level,
                     onChange: function (e) {
                       const patch = {}
                       patch[level] = e.target.value
@@ -1337,11 +1679,11 @@ window.__ModuleLoader__.load({
               React.createElement('div', { className: 'ab-set-cells' },
                 ['low', 'medium', 'high'].map(function (level) {
                   return React.createElement('span', { className: 'ab-set-cell', key: level },
-                    React.createElement('span', { className: 'ab-set-cell-lv' }, t('level.' + level)),
+                    React.createElement('span', { className: 'ab-set-cell-lv' }, level),
                     React.createElement('select', {
                       className: 'ab-set-select ab-set-select-sm',
                       value: (newCriterion.actions && newCriterion.actions[level]) || 'human',
-                      'aria-label': t('level.' + level),
+                      'aria-label': level,
                       onChange: function (e) {
                         const actions = Object.assign({}, newCriterion.actions)
                         actions[level] = e.target.value
@@ -1437,9 +1779,9 @@ window.__ModuleLoader__.load({
                   run('rule-op', { op: 'set', kind: 'levels', value: { fallback: e.target.value } })
                 },
               },
-                React.createElement('option', { value: 'low', key: 'low' }, t('level.low')),
-                React.createElement('option', { value: 'medium', key: 'medium' }, t('level.medium')),
-                React.createElement('option', { value: 'high', key: 'high' }, t('level.high')),
+                React.createElement('option', { value: 'low', key: 'low' }, 'low'),
+                React.createElement('option', { value: 'medium', key: 'medium' }, 'medium'),
+                React.createElement('option', { value: 'high', key: 'high' }, 'high'),
               )),
             React.createElement('p', { className: 'ab-set-card-sub' }, t('set.levelFallbackHint')),
             React.createElement('div', { className: 'ab-set-row ab-set-foot' },
@@ -1532,8 +1874,11 @@ window.__ModuleLoader__.load({
               'aria-label': t('set.judgeEffortLabel'), title: t('set.judgeEffortLabel'),
               onChange: function (e) { setJudgeEffort(e.target.value) },
             },
+              // 只有「模型默认」一个「不表态」选项：`off` 与它在适配层是同一个请求
+              // （见 `normalizeJudgeEffort`），多列一个等价项只会让人以为它们有区别，
+              // 而且 `off` 会走档位校验、在路由没列它时报 err.judgeEffort。
               React.createElement('option', { value: '', key: '' }, t('set.modelDefaultEffort')),
-              React.createElement('option', { value: 'off', key: 'off' }, t('set.effortOff')),
+              // 路由自己把 `off` 列进档位表时也不要列出来：那个语义就是「模型默认」这一项。
               efforts.filter(function (e) { return e.id !== 'off' }).map(function (e) {
                 return React.createElement('option', { value: e.id, key: e.id }, e.name || e.id)
               }),
@@ -1600,6 +1945,15 @@ window.__ModuleLoader__.load({
             }),
           ),
           React.createElement('p', { className: 'ab-set-card-sub' }, t('set.judgeRequestBudgetHint')),
+          React.createElement('div', { className: 'ab-set-row' },
+            React.createElement('span', { className: 'ab-set-item-meta' }, t('set.judgeMaxTokens')),
+            React.createElement('input', {
+              className: 'ab-set-input ab-set-input-num', type: 'number', min: 256, max: 32768,
+              'aria-label': t('set.judgeMaxTokens'),
+              value: judgeMaxTokens, onChange: function (e) { setJudgeMaxTokens(e.target.value) },
+            }),
+          ),
+          React.createElement('p', { className: 'ab-set-card-sub' }, t('set.judgeMaxTokensHint')),
           // 闸门（超预算 / 撞收集护栏）的动作跟它的触发条件放在一起；「参数没采集到」不吃这个开关。
           React.createElement('div', { className: 'ab-set-row' },
             React.createElement('label', { className: 'ab-set-item-meta' }, t('set.truncatedAction')),
@@ -1733,6 +2087,19 @@ window.__ModuleLoader__.load({
             scanAccessGlyphs(rec.target)
             continue
           }
+          // characterData：React 原地改写文本（commitTextUpdate）走的是这条，不是 childList。
+          // 菜单项/触发器的文案在 **span** 里（DSH 的 Menu / PermissionSelect 都是
+          // `<button><span>文案</span></button>`），只扫 `parentNode` 会漏掉真正带
+          // `[role=menuitem]` / `aria-label` 的祖先 —— 文案从「自动审批」换成别的时徽标摘不掉。
+          if (rec.type === 'characterData' && rec.target) {
+            const node = rec.target.parentNode
+            if (!node || node.nodeType !== 1) continue
+            const owner = typeof node.closest === 'function'
+              ? node.closest('button[aria-label], [role="menuitem"]')
+              : null
+            scanAccessGlyphs(owner || node)
+            continue
+          }
           // childList：React 先插入空按钮、再把标签塞进去时，那条记录的 target 是标签自己，
           // 只看 addedNodes 会让下拉里的「自动审批」永远拿不到徽标。这里只沿 target 向上找
           // 最近的触发器/menu 项重扫（不是扫整棵 target 子树，避免流式输出时每次变更都全量子树查询）。
@@ -1749,6 +2116,8 @@ window.__ModuleLoader__.load({
         subtree: true,
         attributes: true,
         attributeFilter: ['aria-label'],
+        // 文案原地改写（React commitTextUpdate）只有这条能看见。
+        characterData: true,
       })
       return function () {
         obs.disconnect()
@@ -1815,6 +2184,31 @@ window.__ModuleLoader__.load({
           )
         })
 
+        /**
+         * 接管原生审批框的详情行。
+         *
+         * 为什么抢别人的槽位：DSH 的 `ApprovalCommand` 只渲染顶层 `command`，而 `write`/MCP 的
+         * 越权审批没有这个字段——人看不到自己要批准什么。槽位是 `single`，规则是「同 priority
+         * 冲突、换 priority 遮蔽、越低越渲染」，ui-chat 用默认 0，所以这里用 -10。
+         * 代价（认下来）：bash 那条也归我们渲染（`ApprovalDetail` 复刻了它的查找逻辑），
+         * 且 DSH 若改了 ChatNode 形状，这一行会整体失效——降级成「没有详情行」，不抛错。
+         */
+        slots.inject('conversation.approval.detail', function () {
+          try {
+            return slots.register(
+              { name: 'conversation.approval.detail', priority: -10 },
+              function (props) { return React.createElement(ApprovalDetail, { slotsProps: props, rpc: rpc, t: t }) },
+            )
+          } catch (error) {
+            // 接管别人槽位是**越权**动作：DSH 将来也用 -10、或本插件被挂两次时会抛
+            // 「single slot ... already has a registration」。这一抛会顺着 slot reconcile
+            // 冒到客户端插件装载，把设置页/提示条/盾牌一起带走——所以只 warn 降级，
+            // 详情行退回 DSH 自带的那一版（少一行提示，别的都还在）。
+            console.warn('[dsh-auto-approve] 接管审批框详情行失败，退回 DSH 自带渲染', error)
+            return undefined
+          }
+        })
+
         slots.inject('settings.section', function () {
           return slots.register(
             { name: 'settings.section', id: 'dsh-auto-approve.settings', order: 55, locale: NS, label: function () { return t('slot.settings') } },
@@ -1834,6 +2228,12 @@ window.__ModuleLoader__.load({
      */
     exports.__test = {
       isAutoReject,
+      // 与宿主 `rules.mjs` 的 TOOL_ARG_KEYS 必须逐项同序（两处不能 import），
+      // 测试拿它对拍，单侧调序会红。
+      DETAIL_KEY_ORDER: DETAIL_KEY_ORDER,
+      approvalDetailText,
+      verdictLineFromEvent,
+      ApprovalDetail,
       isExtraArgKey,
       detailExtraKeys,
       Detail,

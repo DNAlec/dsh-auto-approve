@@ -32,13 +32,29 @@ describe('locales', () => {
     assert.deepEqual(JSON.parse(enM[1]), en)
   })
 
-  it('设置页文案键都有渲染点（删控件要同步删键）', () => {
+  it('文案键都有渲染点（删控件要同步删键）', () => {
     // 没有渲染点的键是死文案：留着会让后来的人以为某个开关还在。反过来也一样——
-    // 每条 `set.*` 文案都必须在 client.js 里以字面量出现（`countsLabel(t, …, 'set.counts')`
+    // 每条文案都必须在 client.js 里以字面量出现（`countsLabel(t, …, 'set.counts')`
     // 这种把键名当参数传的用法同样命中字面量）。删卡片 / 删控件时这条会先红。
+    //
+    // 只覆盖 `set.*` 时，`notice.*` / `detail.*` / `verdict.*` 里的死键与拼错的键都溜得过去
+    // （后者更糟：页面直接把键名当文案显示给用户）。这里把静态键前缀全查一遍。
     const src = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
-    const dead = Object.keys(zh).filter((k) => k.startsWith('set.') && !src.includes(`'${k}'`))
-    assert.deepEqual(dead, [], '这些 set.* 文案已无渲染点，请从 locales.mjs 删除：' + dead.join(', '))
+    // `action.*` / `sandbox.*` / `verdict.*` / `err.*` 是**动态拼接**查表（`t('action.' + a)`），
+    // 静态查不到字面量——那几族只做「反向」检查（调用点必须都在字典里）。
+    const DYNAMIC_PREFIXES = ['action.', 'sandbox.', 'verdict.', 'err.', 'path.', 'src.', 'denyReason.']
+    const STATIC_PREFIXES = ['set.', 'notice.', 'detail.', 'history.', 'slot.']
+    const dead = Object.keys(zh).filter((k) => STATIC_PREFIXES.some((p) => k.startsWith(p)) && !src.includes(`'${k}'`))
+    assert.deepEqual(dead, [], '这些文案已无渲染点，请从 locales.mjs 删除：' + dead.join(', '))
+    // 动态族（`action.*` / `verdict.*` / `err.*` / `sandbox.*`）由 `lookupLabel(t, 'action', a)`
+    // 这类查表消费，静态找不到字面量；它们靠下面的**反向**检查兜住（键必须存在，否则页面显示键名）。
+    assert.ok(DYNAMIC_PREFIXES.length > 0)
+    // 反向：client.js 里字面量调用的 t('...') 键必须都在字典里（否则页面显示键名本身）
+    const called = new Set()
+    for (const m of src.matchAll(/\bt\('([a-z][a-z0-9]*(?:\.[A-Za-z0-9_-]+)+)'/g)) called.add(m[1])
+    const missing = [...called].filter((k) => zh[k] === undefined || en[k] === undefined)
+    assert.deepEqual(missing, [], '这些键被 client.js 用到但字典里没有：' + missing.join(', '))
+    assert.ok(called.size > 100, '正则没匹配到调用点，这条守卫会空转')
   })
 
   it('path.* 都有对应 verdict.*，审核表允许不是英文 id', () => {
@@ -84,6 +100,19 @@ describe('locales', () => {
     assert.notEqual(en['denyReason.payload-uncaptured'], en['denyReason.payload-truncated'])
   })
 
+  it('风险等级不本地化：页面、提示词、审计一律是同一个 id', () => {
+    // 等级 id 是模型契约的一部分（提示词 `- low：说明`、模型输出 `风险等级: low`、审计 `level=low`），
+    // 页面显示成「低」只会让用户自己做映射。动作 id 是另一回事：它只活在 allowlist 内部。
+    for (const [lang, dict] of [['zh', zh], ['en', en]]) {
+      for (const key of ['level.low', 'level.medium', 'level.high']) {
+        assert.equal(dict[key], undefined, `${lang}.${key} 不该存在（等级原样显示 id）`)
+      }
+    }
+    // 动作词仍然本地化（提示词里不出现它们）
+    assert.equal(zh['action.allow'], '允许')
+    assert.equal(en['action.allow'], 'Allow')
+  })
+
   it('设置页文案是纯文本：不得含 markdown 强调或反引号', () => {
     for (const [lang, dict] of [['zh', zh], ['en', en]]) {
       for (const [key, value] of Object.entries(dict)) {
@@ -106,5 +135,25 @@ describe('locales', () => {
     // 页面唯一的指路：其余说明都在 README 里
     assert.match(zh['set.intro'], /README/)
     assert.match(en['set.intro'], /README/)
+  })
+})
+
+describe('locales.mjs 源文本卫生（第 12 轮收尾）', () => {
+  it('同一语言块内不许有重复键（同键同值追加在末尾时，对象与序列化都看不出）', () => {
+    // `sync-locales` 与 `npm run check` 比的是「解析后的键集/值」：同键同值重复时插入顺序与
+    // 序列化都不变，于是 exit 0、全套用例也绿，而源文件里同一个键出现两次（第一个是死代码，
+    // 改动时极易只改一处）。这条断言直接扫源文本，按语言块判重。
+    const src = readFileSync(new URL('../locales.mjs', import.meta.url), 'utf8')
+    const blocks = { zh: src.slice(src.indexOf('export const zh = {'), src.indexOf('export const en = {')), en: src.slice(src.indexOf('export const en = {')) }
+    for (const [lang, text] of Object.entries(blocks)) {
+      const keys = []
+      for (const line of text.split('\n')) {
+        const m = /^\s*'([^']+)'\s*:/.exec(line)
+        if (m) keys.push(m[1])
+      }
+      const dup = keys.filter((k, i) => keys.indexOf(k) !== i)
+      assert.deepEqual(dup, [], `${lang} 块里有重复键：${dup.join(', ')}`)
+      assert.ok(keys.length > 200, `${lang} 块要真的解析出键：${keys.length}`)
+    }
   })
 })

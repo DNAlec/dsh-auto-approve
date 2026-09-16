@@ -39,14 +39,14 @@ const DENY_REASON_SET = new Set(DENY_REASONS)
  * `none`（模型答了、但类别认不出，于是程序落兜底行）也算「没跑成」：
  * 那不是模型选了兜底行，而是输出无法归类——`judge-unparsed` 这一档就是为它存在的。
  */
-const SRC_TO_REASON = {
+const SRC_TO_REASON = Object.freeze(Object.assign(Object.create(null), {
   none: 'judge-unparsed',
   empty: 'judge-empty',
   timeout: 'judge-timeout',
   call: 'judge-call',
   route: 'judge-route',
   plugin: 'plugin-error',
-}
+}))
 
 /**
  * 「转人工」这条路本身不是机器拒绝：用户显式写的人工关键词、审核表判到 human 格，
@@ -196,19 +196,25 @@ const HEAD_LINE = {
 /**
  * 人工框给出结论之后的口径。
  *
- * 到这一步模型从 DSH 拿到的仍然是那句 `the user rejected tool "…"`，
- * 但两种情形必须分开：**人明确说不**（别再问了），以及**转过去但没人回答**
- * （不是人拒的，是通道不可用）。前者再指路转人工毫无意义。
+ * DSH 给模型的原文按结局分：`rejected` → `the user rejected tool "…"`；
+ * `cancelled` → `approval for tool "…" was cancelled`；`unavailable` →
+ * `tool "…" requires approval, but no approval channel is available`
+ * （`core/tools/src/index.ts` 的 `serviceAsk`）。后两者**都不是人拒的**，
+ * 而插件这条通知是它们唯一的着笔处，所以必须把「人明确说不」（别再问了）与
+ * 「转过去但没人回答」（通道不可用，可以再走别的路）分开写。前者再指路转人工毫无意义。
  */
 const HUMAN_HEAD_LINE = {
   zh: {
-    denied: (tool) => `人工审批拒绝了 ${tool}。人是在被明确告知「模型请求复核」之后做的决定，不要再请求同一个操作。`,
+    // 这句**只**用于原生审批框的结论：模型主动求复核的那次调用不追加 notice（工具结果里已写清结局）。
+    // 所以不许写「模型请求复核」——原生框里人看到的是这次操作的详情行与升级理由，压根没有复核请求，
+    // 对没发生的事下断言就是撒谎（与「不许写（自动审批已拒绝）」同一条规则，实测踩过）。
+    denied: (tool) => `人工审批拒绝了 ${tool}。人明确拒绝了这次操作，不要再请求同一个操作。`,
     // 句尾**不带**「原因：」：转人工本来就没有机器原因，硬拼一句「审核模型调用失败」是错误归因。
     // 只有判定压根没跑成时才有 `why`，那时才补「原因：<闭集原因>」。
     unavailable: (tool) => `自动审批把 ${tool} 转给了人工，但没有拿到人工结论（没人在场或审批通道不可用）。`,
   },
   en: {
-    denied: (tool) => `A human rejected ${tool} after an explicit "model requested review" prompt. Do not request this operation again.`,
+    denied: (tool) => `A human rejected ${tool}. A person explicitly declined this operation; do not request it again.`,
     unavailable: (tool) => `Auto-approve escalated ${tool} to a human, but no decision arrived (nobody present or no approval channel).`,
   },
 }
@@ -276,8 +282,12 @@ export const MACHINE_REJECT_PATHS = new Set(['keyword-reject', 'criteria-reject'
 export function formatVerdictBrief(detail, lang) {
   const d = detail && typeof detail === 'object' ? detail : {}
   const l = lang === 'en' ? 'en' : 'zh'
-  // 不是机器否决就什么都不写（宁可少一句，也不能把「没结论」写成「审核模型调用失败」）。
-  if (!MACHINE_REJECT_PATHS.has(String(d.path || '')) && !DENY_REASON_SET.has(d.reason)) return ''
+  /**
+   * 不是机器否决就什么都不写。**判据只看 path**：`reason` 只是「在闭集里挑哪句文案」的输入，
+   * 不能当成「这确实是机器否决」的证据——否则调用方随手多带一个 `reason:'judge-call'`，
+   * 人工转来的框就会显示成「审核模型调用失败」（错误归因）。宁可少一句，也不瞎写。
+   */
+  if (!MACHINE_REJECT_PATHS.has(String(d.path || ''))) return ''
   const reason = DENY_REASON_SET.has(d.reason) ? d.reason : denyReasonFor(d.path, d)
   if (reason === 'criterion') {
     const category = sanitizeNoticeText(d.criterion, 40)
@@ -306,7 +316,11 @@ export function formatVerdictBrief(detail, lang) {
 export function formatReviewRequestReason(toolName, justification, lang, operation, verdict) {
   const l = lang === 'en' ? 'en' : 'zh'
   const tool = sanitizeNoticeText(toolName, 60) || 'unknown'
-  const why = sanitizeNoticeText(justification, 300)
+  const whyFull = sanitizeNoticeText(justification, 100000)
+  const whyCut = sanitizeNoticeText(justification, 300)
+  // 模型理由也要交代截断：静默砍到 300 字，人以为自己读完了它的全部理由
+  // （「操作」那一段本来就有这个标记，两段口径一致）。
+  const why = whyCut + (whyFull.length > whyCut.length ? (l === 'en' ? ' (truncated)' : '（已截断）') : '')
   const op = sanitizeNoticeText(operation, 600)
   const v = sanitizeNoticeText(verdict, 120)
   if (l === 'en') {
@@ -321,18 +335,22 @@ export function formatReviewRequestReason(toolName, justification, lang, operati
     + `模型理由：${why}`
 }
 
-const ESCALATION_HEAD = {
-  zh: {
-    review: (tool) => `自动审批已拒绝 ${tool}。本 profile 开启了模型转人工：`
-      + '若这类操作确实必须执行，调用转人工工具并附一句理由；人工批准后按提示用同样参数重试。',
-    last: '（转人工工具不在此列：它永远由人决定。）',
-  },
-  en: {
-    review: (tool) => `Auto-approve rejected ${tool}. Model-initiated human review is enabled in this profile: `
-      + 'when such an operation is genuinely required, call the human-review tool with a one-line justification; '
-      + 'after approval, retry with the same arguments as instructed.',
-    last: ' (The human-review tool itself is excluded: a human always decides it.)',
-  },
+/**
+ * 追加在**审核模型**系统提示词末尾的那段说明。
+ *
+ * 它写给的是**审核模型**（一个只做归类的纯补全），不是执行调用的那个模型，所以：
+ * ① 不点转人工工具的名字——那个名字属于**执行模型**，由拒绝通知（`formatDenyNotice` 里的
+ *    「调用 X 转人工审批」）告诉它；写在这里曾经渲染成「自动审批已拒绝 request_human_approval」，
+ *    既假（转人工工具永远不会被自动拒绝）又自指（下一句还得声明它不在此列）。
+ * ② 不教审核模型「调用工具 / 批准后重试」——它没有工具，也不需要替人下「这一步必须执行」的结论；
+ *    这里只需要告诉它：**人类复核这条路是开着的**，所以拿不准时照实给出你判断的那一行与等级。
+ */
+const ESCALATION_NOTE = {
+  zh: '本 profile 开启了模型转人工：拿不准这次调用该不该放行时，照上面的表给出你判断的那一行与真实等级即可——'
+    + '程序会按配置把它交给人工审批，不需要你替人下「这一步必须执行」的结论。',
+  en: 'Model-initiated human review is enabled in this profile: when you are unsure whether a call should go through, '
+    + 'just report the row and level you judge — the plugin hands it to a human per its configuration; '
+    + 'you do not need to decide that the step must happen.',
 }
 
 /**
@@ -341,14 +359,12 @@ const ESCALATION_HEAD = {
  * 追加而不是改写：自定义模板必须原样保留，这里只是在末尾补一段说明——
  * 与 `{{criteria}}` / `{{levels}}` 缺失时「只追加定义」的处理同源。
  * @param {string} prompt
- * @param {{ lang?: string, toolName?: string }} [options]
+ * @param {{ lang?: string }} [options]
  */
 export function withEscalationNote(prompt, options) {
   const o = options && typeof options === 'object' ? options : {}
   const l = o.lang === 'en' ? 'en' : 'zh'
-  const tool = sanitizeNoticeText(o.toolName, 48)
-  if (!tool) return String(prompt || '')
-  return `${String(prompt || '')}\n\n${ESCALATION_HEAD[l].review(tool)}\n${ESCALATION_HEAD[l].last}`
+  return `${String(prompt || '')}\n\n${ESCALATION_NOTE[l]}`
 }
 
 /**
@@ -376,7 +392,11 @@ export function canonicalArgsForGrant(value) {
       out = {}
       for (const key of Object.keys(node).sort()) {
         const v = walk(node[key])
-        if (v !== undefined) out[key] = v
+        // 必须建**自有**属性：`out['__proto__'] = v` 走的是原型 setter，键会被静默丢掉，
+        // 于是两次参数不同的调用算出同一个凭证键（人没批准过的那次被放行）。
+        if (v !== undefined) {
+          Object.defineProperty(out, key, { value: v, enumerable: true, writable: true, configurable: true })
+        }
       }
     }
     seen.delete(node)

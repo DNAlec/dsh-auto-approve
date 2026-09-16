@@ -196,6 +196,39 @@ describe('ensureAutoApprovePreset', () => {
     }
   })
 
+  it('空数组的其它写法（`[ ]` / 折行的 `[]`）同样按空 patch 处理', () => {
+    // YAML 里 `[ ]` 与「`[` 换行 `]`」都是合法空序列。只认裸 `[]` 时它们会被当成
+    // 「有内容的 patch」，于是往后面追加条目 → 拼出「flow 序列 + 块序列」的非法 YAML
+    // （DSH `yaml.load` 抛 Unexpected seq-item-ind、`dsh web` 起不来），而自检还报成功。
+    for (const text of ['[ ]\n', '[  ]\n', '[\n]\n', '[ ] # empty\n', '---\n[ ]\n']) {
+      assert.equal(isPatchArrayEmpty(text), true, JSON.stringify(text))
+      const path = tmpPatch(text)
+      assert.equal(ensureAutoApprovePreset(path).status, 'added-entry', JSON.stringify(text))
+      assertSingleSequence(readFileSync(path, 'utf8'), JSON.stringify(text))
+    }
+    // 有内容的 patch 不受影响
+    assert.equal(isPatchArrayEmpty('[\n- id: permission\n]\n'), false)
+  })
+
+  it('flow 写法的 permission 行认不出来时拒绝写盘，不追加第二整块', () => {
+    // `- {id: permission, config: {…}}` 既不被块状行正则认，也不进 writeComposed 的
+    // 块范围查找 → 过去会再追加一整块 `- id: permission`；DSH 里同 id 后写的 config
+    // 整块覆盖前一条，于是用户 flow 行自带的 presets 被静默丢掉而 RPC 报成功。
+    for (const text of [
+      '- {id: permission, config: {presets: {mine: {sandbox: workspace-write}}}}\n',
+      "- {id: 'permission', config: {presets: {}}}\n",
+    ]) {
+      const path = tmpPatch(text)
+      const before = readFileSync(path, 'utf8')
+      const res = ensureAutoApprovePreset(path)
+      assert.equal(res.status, 'unrecognized-id-form', JSON.stringify(text))
+      assert.equal(readFileSync(path, 'utf8'), before, '拒绝时不得动用户文件')
+    }
+    // 无关的条目行（值不是 permission）照旧只追加
+    const other = tmpPatch('- id: some-other-plugin\n  config:\n    x: 1\n')
+    assert.equal(ensureAutoApprovePreset(other).status, 'added-entry')
+  })
+
   it('insert 形式的 permission 行：插进它自己的 presets，不追加第二个 permission', () => {
     const path = tmpPatch([
       '- insert:',
@@ -906,7 +939,7 @@ describe('findAutoApproveKey 的标量正文与键形态', () => {
   it('行级错位的 presets 不是目标：只认 config.presets', () => {
     const text = [
       '- id: permission',
-      '  name: x',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
       '  presets:',
       '    read-only:',
       '      sandbox: read-only',
@@ -984,3 +1017,326 @@ function findKeyIndent(text) {
   assert.ok(line, '应当能找到 auto-approve 键行')
   return (line.match(/^[ \t]*/) || [''])[0].length
 }
+
+/**
+ * 第 1b 轮 review 修复：判据统一（检测/抽取/写入三处共用 `childKeyName` + `directChildIndent`）、
+ * 引号多行标量、sandbox 行层级、坏文件与 name 校验。每条都对应一个实测过的静默失效。
+ */
+describe('review 修复：判据统一与坏文件', () => {
+  const ROW = (body) => [
+    '- id: permission',
+    "  name: '@deepseek-ai/dsh-permission-presets'",
+    '  config:',
+    '    presets:',
+    ...body,
+    '',
+  ].join('\n')
+
+  it('多行**引号**标量里的 `auto-approve:` 不是键（否则预设永不安装且 UI 说已配置）', () => {
+    // 引号标量的续行允许与键同缩进：整段是一个标量值，presets 下没有 auto-approve 键。
+    const text = ROW(['      mine: "第一行', '      auto-approve:', '      说明"'])
+    assert.equal(hasAutoApprovePreset(text), false)
+    assert.equal(getSetupState(tmpPatch(text)).configured, false)
+    const path = tmpPatch(text)
+    assert.equal(ensureAutoApprovePreset(path).status, 'added-preset')
+    const out = readFileSync(path, 'utf8')
+    assertSingleSequence(out)
+    assert.match(out, /^ {6}auto-approve:$/m)
+    // 幂等：第二次必须 already（否则每次启动都再插一份）
+    assert.equal(ensureAutoApprovePreset(path).status, 'already')
+    // 单引号同样
+    assert.equal(hasAutoApprovePreset(ROW(["      mine: '第一行", '      auto-approve:', "      说明'"])), false)
+    // 反方向：引号在续行里闭合后，后面的真键照旧认得出（别把标量吞得太远）
+    const closed = ROW(['      mine: "第一行', '        说明"', '      auto-approve:', '        sandbox: read-only'])
+    assert.equal(hasAutoApprovePreset(closed), true)
+    assert.equal(readAutoApproveSandboxFromText(closed), 'read-only')
+  })
+
+  it('抽取 / 漂移只看**生效的**那条 permission 行（后写的 config 整块覆盖前面的）', () => {
+    const text = [
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config:',
+      '    presets:',
+      '      read-only:',
+      '        sandbox: read-only',
+      '      workspace-write:',
+      '        sandbox: workspace-write',
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config:',
+      '    presets:',
+      '      mine:',
+      '        sandbox: read-only',
+      '',
+    ].join('\n')
+    assert.deepEqual(extractPresetKeysFromPatchText(text), ['mine'])
+    assert.deepEqual(getSetupState(tmpPatch(text)).presets, ['mine'])
+    // 漂移告警据此才有意义：出厂表真的被覆盖掉了
+    const base = ['read-only', 'workspace-write', 'danger-full-access']
+    assert.deepEqual(presetDrift(base, extractPresetKeysFromPatchText(text)), {
+      missing: base, extra: ['mine'],
+    })
+  })
+
+  it('sandbox 只认 auto-approve 的**直接子键**：嵌套 / 块标量正文都不算', () => {
+    // 只看缩进时会把 `args.sandbox:` 或正文里的一行当成目标：报 ok/updated，
+    // 而 DSH 生效的 auto-approve 里根本没有 sandbox（schema 里它必填），还会改写用户正文。
+    const nested = ROW(['      auto-approve:', '        approval: ask', '        args:', '          sandbox: workspace-write'])
+    assert.equal(readAutoApproveSandboxFromText(nested), '')
+    const path = tmpPatch(nested)
+    const r = setAutoApproveSandbox(path, 'read-only')
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'err.presetSandboxMissing')
+    assert.equal(readFileSync(path, 'utf8'), nested, '拒绝时文件逐字节不变')
+
+    const inBody = ROW(['      auto-approve:', '        approval: ask', '        description: |', '          sandbox: workspace-write'])
+    assert.equal(readAutoApproveSandboxFromText(inBody), '')
+    const bodyPath = tmpPatch(inBody)
+    assert.equal(setAutoApproveSandbox(bodyPath, 'read-only').ok, false)
+    assert.equal(readFileSync(bodyPath, 'utf8'), inBody, '块标量正文不许被改写')
+  })
+
+  it('sandbox 行带行尾注释：读得出、改得动、注释留着', () => {
+    const text = ROW(['      auto-approve:', '        sandbox: workspace-write  # 模式', '        approval: ask'])
+    assert.equal(readAutoApproveSandboxFromText(text), 'workspace-write')
+    const path = tmpPatch(text)
+    const r = setAutoApproveSandbox(path, 'read-only')
+    assert.equal(r.ok, true)
+    assert.equal(r.status, 'updated')
+    assert.match(readFileSync(path, 'utf8'), /sandbox: read-only  # 模式/)
+    assert.equal(readAutoApproveSandbox(path), 'read-only')
+  })
+
+  it('认不出的 permission 行拼写一律拒绝写盘（标签 / 转义 / flow / 多行序列项）', () => {
+    for (const idLine of ['- id: !!str permission', '- id: "\\u0070ermission"', '- {id: permission, config: {}}']) {
+      const text = [idLine, "  name: '@deepseek-ai/dsh-permission-presets'", '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''].join('\n')
+      const path = tmpPatch(text)
+      const r = ensureAutoApprovePreset(path)
+      assert.equal(r.ok, false, idLine)
+      assert.equal(r.status, 'unrecognized-id-form', idLine)
+      assert.equal(readFileSync(path, 'utf8'), text, `${idLine}：拒绝时文件必须逐字节不变`)
+    }
+    // 折成多行的序列项（`-` 单独一行）同样拦得住
+    const multiline = ['-', '  id: permission', '  config:', '    presets: {}', ''].join('\n')
+    const path = tmpPatch(multiline)
+    assert.equal(ensureAutoApprovePreset(path).status, 'unrecognized-id-form')
+    assert.equal(readFileSync(path, 'utf8'), multiline)
+  })
+
+  it('presets 块里更深缩进、带 ASCII 冒号的注释不算键（检测与写入必须同一套判据）', () => {
+    const text = ROW(['        # note: keep in sync with dsh-base', '      auto-approve:', '        sandbox: workspace-write'])
+    assert.equal(hasAutoApprovePreset(text), true)
+    const path = tmpPatch(text)
+    assert.equal(ensureAutoApprovePreset(path).status, 'already')
+    assert.equal(readFileSync(path, 'utf8'), text)
+  })
+
+  it('预设键不设字符集：中文键照旧抽得出来（否则漂移与预设表双错）', () => {
+    const text = ROW(['      "我的预设":', '        sandbox: read-only', '      read-only:', '        sandbox: read-only'])
+    assert.deepEqual(extractPresetKeysFromPatchText(text), ['我的预设', 'read-only'])
+  })
+
+  it('缩进的 `[]` 是某个键的空序列值，不是根空数组（合法文件不许被判 broken-patch）', () => {
+    const text = [
+      '- id: some-plugin',
+      '  config:',
+      '    inject:',
+      '      []',
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config:',
+      '    presets:',
+      '      read-only:',
+      '        sandbox: read-only',
+      '',
+    ].join('\n')
+    const path = tmpPatch(text)
+    assert.equal(ensureAutoApprovePreset(path).status, 'added-preset')
+    const out = readFileSync(path, 'utf8')
+    // 缩进的 `[]` 是内容，必须原样留着；同时 auto-approve 键也真的插进去了
+    assert.match(out, /^ {6}\[\]$/m)
+    assert.match(out, /^ {6}auto-approve:$/m)
+    assert.equal(ensureAutoApprovePreset(path).status, 'already')
+  })
+
+  it('坏文件不许报 ok/already：根部混了裸 []、或内容之后还有文档标记', () => {
+    const stray = '[]\n- id: permission\n  config:\n    presets:\n      auto-approve:\n        sandbox: read-only\n'
+    const path = tmpPatch(stray)
+    const r = ensureAutoApprovePreset(path)
+    assert.equal(r.ok, false)
+    assert.equal(r.status, 'broken-patch')
+    assert.equal(readFileSync(path, 'utf8'), stray)
+    // 末尾的 `...` 不产生第二个文档：不算坏文件（别把合法文件拦掉）
+    const trailing = "- id: permission\n  config:\n    presets:\n      auto-approve:\n        sandbox: read-only\n...\n"
+    assert.equal(ensureAutoApprovePreset(tmpPatch(trailing)).status, 'already')
+    // 中途 `...` = 第二个文档：插入路径本来不会去掉标记，写进去也解析不了
+    const mid = "- id: webserver\n- id: permission\n  config:\n    presets:\n      auto-approve:\n        sandbox: read-only\n...\n- id: x\n"
+    const midPath = tmpPatch(mid)
+    assert.equal(ensureAutoApprovePreset(midPath).status, 'broken-patch')
+    assert.equal(readFileSync(midPath, 'utf8'), mid)
+  })
+
+  it('根不是块状序列 / 条目不是 mapping：报 broken-patch 且不动文件', () => {
+    // DSH 的 `parsePatchList` 要求顶层是数组、每个条目是 mapping。往别的形状里追加条目会写出
+    // 「flow 序列 + 块序列」或「映射 + 序列项」的混合体（比改前更坏），而 RPC 却报成功、
+    // UI 说「已写入，请重启」——profile 直接起不来（第 4 轮 preset 复审 P1）。
+    const cases = {
+      'root-mapping': 'auto-approve:\n  sandbox: workspace-write\n',
+      'root-config-key': 'config:\n  presets: {}\n',
+      'root-empty-mapping': '{}\n',
+      'root-null': 'null\n',
+      'root-scalar': 'permission\n',
+      'root-flow-seq': '[{id: other-plugin, name: x}]\n',
+      'entry-not-mapping': '- just-a-string\n',
+      'entry-number': '- 42\n',
+    }
+    for (const [name, text] of Object.entries(cases)) {
+      const path = tmpPatch(text)
+      const r = ensureAutoApprovePreset(path)
+      assert.equal(r.ok, false, name)
+      assert.equal(r.status, 'broken-patch', name + '：' + JSON.stringify(r))
+      assert.equal(readFileSync(path, 'utf8'), text, name + '：坏文件一个字节都不动')
+    }
+    // 对照：空数组（三种写法）与正常的块状条目照旧
+    for (const text of ['[]\n', '[ ]\n', '[\n]\n', '- id: other-plugin\n  name: x\n']) {
+      const path = tmpPatch(text)
+      assert.equal(ensureAutoApprovePreset(path).ok, true, JSON.stringify(text))
+    }
+  })
+
+  it('有认不出的 permission 行时 setup 报「未配置」（设置页要留下补救按钮）', () => {
+    const text = ['- id: permission', '  name: "@deepseek-ai/dsh-permission-presets"', '  config:', '    presets:', '      auto-approve:', '        sandbox: workspace-write', '- id: !!str permission', '  config:', '    presets: {}', ''].join('\n')
+    const path = tmpPatch(text)
+    const state = getSetupState(path)
+    assert.equal(state.configured, false, '后写的认不出行会整块覆盖，说「已配置」就是撒谎')
+    assert.equal(state.unrecognizedRow, true)
+    assert.equal(ensureAutoApprovePreset(path).status, 'unrecognized-id-form')
+    assert.equal(readFileSync(path, 'utf8'), text)
+  })
+
+  it('内容之前的 `...` 也是第二个文档：坏文件不许报 already/ok', () => {
+    // js-yaml 实测「`...` 换行再接 `- id: permission`」报 expected a single document——
+    // 文档已结束，后面的内容属于第二个文档。只判「内容之后出现标记」时这种文件会被当正常。
+    const leading = "...\n- id: permission\n  config:\n    presets:\n      auto-approve:\n        sandbox: read-only\n"
+    const path = tmpPatch(leading)
+    const r = ensureAutoApprovePreset(path)
+    assert.equal(r.ok, false)
+    assert.equal(r.status, 'broken-patch')
+    assert.equal(readFileSync(path, 'utf8'), leading, '坏文件一个字节都不动')
+    // 末尾的 `...` 仍不算坏文件（它不产生第二个文档）
+    const trailing = "- id: permission\n  config:\n    presets:\n      auto-approve:\n        sandbox: read-only\n...\n"
+    assert.equal(ensureAutoApprovePreset(tmpPatch(trailing)).status, 'already')
+  })
+
+  it('块状 sandbox 的**引号值**照旧读得出、同值写入判 unchanged', () => {
+    const text = ROW(['      auto-approve:', '        sandbox: "workspace-write"', '        approval: ask'])
+    assert.equal(readAutoApproveSandboxFromText(text), 'workspace-write', '读回来必须是真值（去引号）')
+    const path = tmpPatch(text)
+    const same = setAutoApproveSandbox(path, 'workspace-write')
+    assert.equal(same.ok, true)
+    assert.equal(same.status, 'unchanged', '同一个值不该被判成需要改写（否则 UI 误报「已写入，请重启」）')
+    assert.equal(same.needRestart, false)
+    assert.equal(readFileSync(path, 'utf8'), text)
+    // 换一个值照旧能改
+    assert.equal(setAutoApproveSandbox(path, 'read-only').status, 'updated')
+    assert.match(readFileSync(path, 'utf8'), /sandbox: read-only/)
+  })
+
+  it('通用插入路径在 CRLF 文件里也写 CRLF（不许混进 LF 行）', () => {
+    const text = ['- id: permission', "  name: '@deepseek-ai/dsh-permission-presets'", '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''].join('\r\n')
+    const path = tmpPatch(text)
+    const r = ensureAutoApprovePreset(path, 'workspace-write')
+    assert.equal(r.status, 'added-preset')
+    for (const line of readFileSync(path, 'utf8').split('\n').slice(0, -1)) {
+      assert.equal(line.endsWith('\r'), true, '每一行都必须以 CRLF 结尾: ' + JSON.stringify(line))
+    }
+  })
+
+  it('缩进的条目 / `-` 单独一行后 id 不是第一个键：同样算认不出的 permission 行', () => {
+    // 第 2 轮的上下文判据要求「父行是**根级**条目」且「id 是第一个键」，于是漏掉这三类：
+    // DSH 自己的 base patch 就是 `- insert:` + 缩进条目；`-` 单独一行时 id 可以在别的键之后。
+    // 漏判的后果是追加第二整块 permission 行 → DSH 里后写的 config 整块覆盖 → 用户 presets 静默消失。
+    const forms = {
+      'insert-flow': ['- insert:', '    - {id: permission, name: "@deepseek-ai/dsh-permission-presets", config: {presets: {mine: {sandbox: read-only, approval: ask}}}}', ''],
+      // `- insert:` 里的缩进条目（DSH 自己的 base patch 就是这形状）：这是**真的** patch 条目。
+      // 注意 `inject:` / `items:` 这类**普通键**下面的列表项不是 patch 条目（DSH 只对顶层条目与
+      // `insert:` 组递归），所以那些形状必须放行——见下面那条用例。
+      'insert-indented-flow': ['- insert:', '    - {id: permission, config: {presets: {mine: {sandbox: read-only}}}}', ''],
+      'solo-id-second': ['-', '  name: foo', '  id: permission', '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''],
+    }
+    for (const [name, lines] of Object.entries(forms)) {
+      const text = lines.join('\n')
+      const path = tmpPatch(text)
+      const r = ensureAutoApprovePreset(path, 'workspace-write')
+      assert.equal(r.ok, false, name)
+      assert.equal(r.status, 'unrecognized-id-form', name)
+      assert.equal(readFileSync(path, 'utf8'), text, name + '：拒绝时文件必须逐字节不变')
+    }
+  })
+
+  it('普通键（`inject:` / `items:` / 列表）下面的 `id: permission` 不是 patch 条目 → 必须放行', () => {
+    // DSH 的 `parsePatchList` 只把顶层条目与 `insert:` 组当 patch 条目；`inject:`（依赖注入）
+    // 或别的插件 config 里的列表项/映射只是值。把它们当 permission 行会**永久拒写**合法文件
+    // （第 4 轮实测：`inject: [{id: permission, …}]` 报 unrecognized-id-form、文件一动不动）。
+    const allowed = {
+      'flow-list-under-key': ['- id: some-plugin', '  inject: [{id: permission, config: {x: 1}}]', ''],
+      'block-list-under-key': ['- id: webserver', '  name: x', '  config:', '    list:', '      - id: permission', ''],
+      'list-item-with-id': ['- id: other-plugin', '  config:', '    list:', '      - thing: x', '        id: permission', ''],
+      'mapping-under-config': ['- id: other-plugin', '  config:', '    thing:', '      id: permission', ''],
+    }
+    for (const [name, lines] of Object.entries(allowed)) {
+      const text = lines.join('\n')
+      const path = tmpPatch(text)
+      const r = ensureAutoApprovePreset(path, 'workspace-write')
+      assert.equal(r.ok, true, name + '：' + JSON.stringify(r))
+      assert.equal(r.status, 'added-entry', name)
+      assert.match(readFileSync(path, 'utf8'), /- id: permission\n/, name + '：要真的写进去一条')
+    }
+    // 对照：真正的条目形态（顶层 / `insert:` 里）仍要拒
+    for (const [name, lines] of Object.entries({
+      'top-level-tagged': ['- id: !!str permission', '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''],
+      'solo-then-id': ['-', '  name: foo', '  id: permission', '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''],
+    })) {
+      const path = tmpPatch(lines.join('\n'))
+      assert.equal(ensureAutoApprovePreset(path).status, 'unrecognized-id-form', name)
+    }
+  })
+
+  it('别的插件 config 里的 `id: permission` 不算认不出的 permission 行（合法文件不许被拒写）', () => {
+    // 只看「这一行有没有 id: permission」时，这种完全合法的文件会被永久拒写，
+    // 而错误文案还说「拒绝追加第二行」——那是假话（文件里根本没有 permission 行）。
+    const text = ['- id: other-plugin', '  config:', '    thing:', '      id: permission', ''].join('\n')
+    const path = tmpPatch(text)
+    const r = ensureAutoApprovePreset(path, 'workspace-write')
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(r.status, 'added-entry')
+    assert.match(readFileSync(path, 'utf8'), /- id: permission\n/)
+    // 但**条目行**上的各种认不出的拼写照旧拒写
+    for (const entry of ['- id: !!str permission', '- id: "\\u0070ermission"', '- {id: permission, config: {}}']) {
+      const bad = [entry, '  config:', '    presets:', '      mine:', '        sandbox: read-only', ''].join('\n')
+      const badPath = tmpPatch(bad)
+      assert.equal(ensureAutoApprovePreset(badPath).status, 'unrecognized-id-form', entry)
+      assert.equal(readFileSync(badPath, 'utf8'), bad, entry)
+    }
+  })
+
+  it('permission 行的 name 写错时拒绝（DSH 的 applyEntryPatches 会整条跳过）', () => {
+    const text = ROW(['      auto-approve:', '        sandbox: read-only']).replace(
+      "'@deepseek-ai/dsh-permission-presets'", "'@deepseek-ai/dsh-permission-presets-v2'",
+    )
+    const path = tmpPatch(text)
+    const r = ensureAutoApprovePreset(path)
+    assert.equal(r.ok, false)
+    assert.equal(r.status, 'name-mismatch')
+    assert.equal(readFileSync(path, 'utf8'), text)
+    // 沙箱写入走同一条路：也要报错，不能返回 ok
+    const sandbox = setAutoApproveSandbox(path, 'read-only')
+    assert.equal(sandbox.ok, false)
+    assert.equal(sandbox.status, 'name-mismatch')
+    // 正确的 name / 没有 name 都照旧工作
+    assert.equal(ensureAutoApprovePreset(tmpPatch(ROW(['      auto-approve:', '        sandbox: read-only']))).status, 'already')
+    const noName = ['- id: permission', '  config:', '    presets:', '      auto-approve:', '        sandbox: read-only', ''].join('\n')
+    assert.equal(ensureAutoApprovePreset(tmpPatch(noName)).status, 'already')
+  })
+})

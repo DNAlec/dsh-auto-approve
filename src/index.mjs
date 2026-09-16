@@ -21,6 +21,7 @@
  *
  * 命名导出 name / inject / apply。禁止 default export（Loader unwrapExports 会丢掉 inject）。
  */
+import { randomUUID } from 'node:crypto'
 import {
   NAME,
   pathsFor,
@@ -77,8 +78,12 @@ import {
   fail,
   effectiveJudgeTimeoutMs,
   judgeMaxTokens,
+  normalizeJudgeMaxTokens,
+  JUDGE_MAX_TOKENS_MIN,
+  JUDGE_MAX_TOKENS_MAX,
   judgeEmptyRetryMaxTokens,
   judgeFailureNote,
+  isKnownPresetSandbox,
 } from './rules.mjs'
 import { dirname } from 'node:path'
 import {
@@ -180,7 +185,29 @@ export function apply(ctx, rawConfig = {}) {
   // 损坏配置不写沙箱。缺失配置若 patch 里已有 auto-approve，也不用默认 workspace-write 去加宽。
   if (!pluginCfgCorrupt) {
     const already = getSetupState(paths.profilePatch).configured
-    const writeSandbox = (loadedPlugin.ok && !loadedPlugin.missing) || migratedPlugin || !already
+    /**
+     * 「配置里**明确**说了 sandbox」才算有意见：`loadedPlugin.ok && !missing` 只说明文件存在，
+     * 里面可能压根没有 `presetSandbox` 这个键（老配置、手写配置），此时 `pluginCfg.presetSandbox`
+     * 是**默认值** workspace-write——拿默认值去写盘会把用户手改成 `read-only` 的 patch 加宽
+     * （实测过的 P4：config 存在但无该键 + patch 里 read-only → 启动改成 workspace-write）。
+     * 显式有意见、刚从旧路径迁移过来、或 patch 里还压根没有 auto-approve（要安装）时才写。
+     */
+    /**
+     * 值也要**认得出**：`"READ-ONLY"` / `" read-only "` 与 `read-only` 是同一个意思
+     * （`normalizePresetSandbox` 会 trim+小写），而真正认不出的值（打错、未知模式）按
+     * 「没有有效意见」处理——不许拿默认 workspace-write 去改写用户手写的 `sandbox: read-only`
+     * （那是**放宽沙箱**，实测：`presetSandbox: "READ-ONLY"` 会把 patch 行改成 workspace-write）。
+     */
+    const rawSandbox = loadedPlugin.ok && !loadedPlugin.missing
+      && Boolean(loadedPlugin.value) && typeof loadedPlugin.value === 'object'
+      && Object.prototype.hasOwnProperty.call(loadedPlugin.value, 'presetSandbox')
+      ? loadedPlugin.value.presetSandbox
+      : undefined
+    const cfgHasSandbox = isKnownPresetSandbox(rawSandbox)
+    if (rawSandbox !== undefined && !cfgHasSandbox) {
+      console.warn(`[${NAME}] config.json 里的 presetSandbox 认不出（${String(rawSandbox)}），本次不据此改写 patch`)
+    }
+    const writeSandbox = cfgHasSandbox || migratedPlugin || !already
     if (writeSandbox) {
       const presetSetup = setAutoApproveSandbox(paths.profilePatch, pluginCfg.presetSandbox)
       if (presetSetup.ok && presetSetup.needRestart) {
@@ -340,12 +367,20 @@ export function apply(ctx, rawConfig = {}) {
     pruneDenyReasons()
   }
 
-  /** 先按 callId 精确查，查不到再用 session+工具名兜底（只可能是「无 callId」那条路径写的）。 */
+  /**
+   * 先按 callId 精确查；**只有本次调用自己没有 callId** 时才回落 `session+工具名` 兜底键。
+   *
+   * 兜底键是「无 callId 那条路径」写的（见 `rememberDeny`），读写两侧必须对称：读侧若在
+   * 本次调用**有** callId 时也去查它，同会话里另一次同名工具调用（成功放行的那次、或被别的
+   * 原因拒的那次）就会把这条归因吃掉——放行的调用收到「自动审批拒绝了 X」，而真被拒的那次
+   * 只剩 DSH 原文 `the user rejected tool`。给模型一个**错的**原因比「这次没有原因」更糟。
+   */
   function lookupDeny(sessionId, callId, toolName) {
     if (callId) {
       const key = denyKey(sessionId, callId)
       const found = denyReasons.get(key)
       if (found) return { key, found }
+      return null
     }
     if (toolName) {
       const key = denyFallbackKey(sessionId, toolName)
@@ -368,23 +403,35 @@ export function apply(ctx, rawConfig = {}) {
     return hit ? hit.found : undefined
   }
 
-  function forgetDeny(sessionId, callId) {
-    if (!callId) return
-    denyReasons.delete(denyKey(sessionId, callId))
+  /**
+   * 归因键：有 callId 用精确键，没有就用 `session+工具名` 兜底键——**与 `rememberDeny` 同一套**。
+   * 结算侧（`settleDeny` / `forgetDeny`）漏了兜底键时，一次「无 callId 的人工复核」会永远停在
+   * `path=human-review` 那条机器否决归因上：人明明批准了，post-execute 仍给模型发一句
+   * 「自动审批拒绝了 X（机器判定，不是用户拒绝）」；人拒绝时也被归因成机器拒绝。
+   */
+  function denyKeyFor(sessionId, callId, toolName) {
+    if (callId) return denyKey(sessionId, callId)
+    return toolName ? denyFallbackKey(sessionId, toolName) : ''
+  }
+
+  function forgetDeny(sessionId, callId, toolName) {
+    const key = denyKeyFor(sessionId, callId, toolName)
+    if (!key) return
+    denyReasons.delete(key)
   }
 
   /**
    * 人工框结算后回填归因。四种结局只落到三档，因为人只能点两个按钮：
    *
    * 批准（`allowed-once`）→ 忘掉：放行了，没有「被拒」这回事，模型不该收到拒绝通知。
-   * 拒绝（`rejected`）→ `humanDenied`：人在被明确告知「模型请求复核」之后说不。
+   * 拒绝（`rejected`）→ `humanDenied`：人明确拒绝了这次操作（原生审批框的结论；模型求复核那次调用不追加 notice）。
    * 取消（`cancelled`：请求信号 abort，比如用户中止了本轮）/
    * 无结论（`unavailable`：答案链里没人在场应答）→ `humanUnavailable`：
    * **不是人拒的**，而 DSH 给模型的原文仍然是 `the user rejected tool "…"`，必须纠正这一句。
    */
-  function settleDeny(sessionId, callId, outcome) {
-    if (!callId) return
-    const key = denyKey(sessionId, callId)
+  function settleDeny(sessionId, callId, outcome, toolName) {
+    const key = denyKeyFor(sessionId, callId, toolName)
+    if (!key) return
     const found = denyReasons.get(key)
     if (!found) return
     if (outcome === 'allowed-once') {
@@ -447,6 +494,20 @@ export function apply(ctx, rawConfig = {}) {
     if (loaded.missing) return
     allowlist = normalizeAllowlist(loaded.value)
     allowlistCorrupt = false
+  }
+
+  /**
+   * 两个文件都重载完再同步等级说明语言。
+   *
+   * `syncLevelLanguage()` 依赖**两个**文件：语言在 config.json、说明在 allowlist.json。
+   * 它曾经写在 `reloadAllowlist()` 内部，而所有调用点都是 `reloadAllowlist()` →
+   * `reloadPluginCfg()`，于是用的一直是**上一次请求**的 `pluginCfg.judgePromptLang`：
+   * 语言在盘上被外部改动（手改 config.json / 另一个进程）后，第一次请求送审的是
+   * 「新语言框架 + 旧语言等级说明」，第二次才收敛。启动路径本来就排在两个 load 之后。
+   */
+  function reloadBoth() {
+    reloadAllowlist()
+    reloadPluginCfg()
     syncLevelLanguage()
   }
 
@@ -474,9 +535,20 @@ export function apply(ctx, rawConfig = {}) {
       console.warn(`[${NAME}] judgeRequestBudget=${budget} 越界，已归一为 `
         + `${normalizeJudgeRequestBudget(budget)}（区间 ${JUDGE_REQUEST_BUDGET_MIN}..${JUDGE_REQUEST_BUDGET_MAX}）`)
     }
+    const rawEffort = String((r.judge && r.judge.reasoningEffort) || '').trim()
+    if (rawEffort.toLowerCase() === 'off') {
+      console.warn(`[${NAME}] judge.reasoningEffort=off 与「模型默认」是同一个请求`
+        + `（适配层会把 off 删掉），已归一为空——设置页不再提供这个选项`)
+    }
     const timeout = Number(r.judge && r.judge.timeoutMs)
     if (Number.isFinite(timeout) && timeout <= 0) {
       console.warn(`[${NAME}] judge.timeoutMs=${timeout} 非法，已回落为 20000`)
+    }
+    // 首轮输出预算越界也归一（设置页对同一个值报错误提示，行为不一致没问题，静默才有问题）。
+    const tokens = Number(r.judge && r.judge.maxTokens)
+    if (Number.isFinite(tokens) && tokens > 0 && (tokens < JUDGE_MAX_TOKENS_MIN || tokens > JUDGE_MAX_TOKENS_MAX)) {
+      console.warn(`[${NAME}] judge.maxTokens=${tokens} 越界，已归一为 `
+        + `${normalizeJudgeMaxTokens(tokens)}（区间 ${JUDGE_MAX_TOKENS_MIN}..${JUDGE_MAX_TOKENS_MAX}）`)
     }
     // 预算低于「系统提示词本身」的长度时，任何调用都送不进审核模型（每次都会按
     // 「看不见这次操作」的动作执行）。这是可配项，所以不能拒绝，但必须让用户看见。
@@ -508,6 +580,8 @@ export function apply(ctx, rawConfig = {}) {
     if (pluginCfgCorrupt && !(opts && opts.overwriteCorrupt)) return false
     if (!saveJson(paths.pluginConfig, pluginCfg)) {
       reloadPluginCfg()
+      // 写失败后用盘上的配置当权威：语言可能已经被外部改过，等级说明跟着它同步一次。
+      syncLevelLanguage()
       return false
     }
     pluginCfgCorrupt = false
@@ -556,7 +630,7 @@ export function apply(ctx, rawConfig = {}) {
     put('src', 20)
     put('reason', 600)
     put('raw', 800)
-    put('error', 400)
+    // 只留 `errorCode`：`error` 与它同值且没有任何生产者（AGENTS：别给没有生产者的字段留槽位）。
     put('errorCode', 80)
     put('errorMs', 20)
     put('errorDetail', 400)
@@ -587,6 +661,9 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       justification: String(justification || '').slice(0, 400),
       verdict: String(verdict || 'auto'),
     }
+    // 事件带 `callId`：客户端要在**审批框正在等**的时候按它关联到这次调用的判定
+    // （原生框的详情行要写一行「自动判定：…」——人在覆盖/接手机器决定，得知道机器为什么）。
+    if (o.callId) ev.callId = String(o.callId)
     if (o.kind) ev.kind = o.kind
     if (o.category) ev.category = o.category
     if (o.judgeReason) ev.judgeReason = String(o.judgeReason).slice(0, 600)
@@ -615,6 +692,10 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     if (o.src) ev.src = String(o.src).slice(0, 20)
     if (o.cwd) ev.cwd = String(o.cwd).slice(0, 400)
     if (o.keyword) ev.keyword = String(o.keyword).slice(0, 120)
+    // 审批框的「自动判定」行读的是**顶层** `level` / `levelSrc`（客户端另有 `judge.level` 回落）。
+    // 此前这两个字段只到 `forwardToHuman` 的 detail 就被这份白名单丢掉，等于没有生产者。
+    if (o.level) ev.level = String(o.level).slice(0, 20)
+    if (o.levelSrc) ev.levelSrc = String(o.levelSrc).slice(0, 20)
     // 「这次调用没采集到参数」是审批记录里必须自带的事实：光看 `args` 缺失分不清
     // 「真没有参数」与「插件没拿到」——而人工批准的一方正是靠它才知道自己在批准什么。
     if (o.argsCaptured === false) ev.argsCaptured = false
@@ -729,7 +810,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
    */
   async function callJudge(userText, signal, route, system, maxTokensOverride) {
     const prompt = system || judgeFramework(allowlist.criteria, normalizeJudgePromptLang(pluginCfg.judgePromptLang))
-    const maxTokens = Number(maxTokensOverride) > 0 ? Number(maxTokensOverride) : judgeMaxTokens(route.reasoningEffort, route.info)
+    const maxTokens = Number(maxTokensOverride) > 0 ? Number(maxTokensOverride) : judgeMaxTokens(route.reasoningEffort, route.info, pluginCfg.judge.maxTokens)
     const opts = {
       provider: route.provider,
       model: route.model,
@@ -775,7 +856,8 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     const hr = humanReview()
     if (!hr.enabled) return base
     if (!registeredReviewTool) return base
-    return withEscalationNote(base, { lang: hr.noticeLang, toolName: registeredReviewTool })
+    // 不传工具名：这段是给**审核模型**看的（它没有工具），工具名由拒绝通知告诉执行模型。
+    return withEscalationNote(base, { lang: hr.noticeLang })
   }
 
   /** 全局送审预算的当前值（设置页可改，默认 20000）。 */
@@ -914,6 +996,27 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     }
     let last = { failed: true }
     let retryMaxTokens = 0
+    /**
+     * 「送审超预算」的终态：**两个** catch 都要认（第一次尝试、以及换了大预算之后的重试）。
+     * 它不是「模型调用失败」：没问过模型、结果也不会因为重试改变，处置一律按用户的
+     * `truncatedAction`（与送审前的闸门同一条规则）。只认第一个 catch 时，配置在判定途中被改小
+     * （设置页保存、并发重载）就会把「超上限 → 拒绝」变成弹人工框、证据也从
+     * `request=N>B` 退化成「调用失败」。
+     */
+    const oversizeTerminal = (error) => {
+      const details = (error && error.details) || {}
+      const reason = details.reason
+        || (error && error.code === 'err.judgeRequestOverBudget'
+          ? `err.judgePayloadOversize ${formatJudgeRequestNote(details.chars, details.budget)}`
+          : (error && error.code))
+      console.warn(`[${NAME}] ${label} 送审内容超过预算，按 truncatedAction 处理 | ${reason}`)
+      return {
+        failed: true,
+        errorCode: 'err.truncatedPayload',
+        errorDetail: String(reason || ''),
+        oversize: true,
+      }
+    }
     try {
       const first = await runOnce()
       if (first.aborted) return first
@@ -926,20 +1029,8 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       const code = error && error.code
       // 不变式断言（超限参数不该走到这里）：结果不会因为重试而改变，也不该被当成模型调用异常。
       if (error && error.noRetry) {
-        const details = error.details || {}
-        const reason = details.reason
-          || (error.code === 'err.judgeRequestOverBudget'
-            ? `err.judgePayloadOversize ${formatJudgeRequestNote(details.chars, details.budget)}`
-            : error.code)
-        console.warn(`[${NAME}] ${label} 送审内容超过预算，按 truncatedAction 处理 | ${reason}`)
-        last = {
-          failed: true,
-          errorCode: 'err.truncatedPayload',
-          errorDetail: String(reason),
-          oversize: true,
-        }
         // 压根没问模型，不计入判定健康度。
-        return last
+        return oversizeTerminal(error)
       }
       if (code === 'err.judgeEmpty') {
         if (cancelled()) return { aborted: true }
@@ -960,6 +1051,11 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       console.warn(`[${NAME}] ${label} 重试超时(${timeoutMs}ms)`)
       return settled(last, { retried: true })
     } catch (error) {
+      // 重试也可能撞预算（第一次之后配置被改小 / 换了更大预算仍然超）：与第一次同一条规则。
+      if (error && error.noRetry) {
+        console.warn(`[${NAME}] ${label} 重试前发现送审内容超预算（配置可能刚被改动）`)
+        return oversizeTerminal(error)
+      }
       const prev = { errorMs: last.errorMs, raw: last.raw }
       last = failureOf(error, prev)
       console.error(`[${NAME}] ${label} 重试仍异常`, error)
@@ -1045,6 +1141,10 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           level: '',
           levelSrc: '',
           src: 'truncated',
+          // `oversize` 必须跟着 verdict 一起往上传：调用方据此把 path 记成 `truncated-payload`
+          // （与送审前的闸门同一条 path）。漏了它，事件就变成 `criteria-reject`，
+          // 归因读起来是「类别判定」而不是「没问过模型」。
+          oversize: true,
           failed: true,
           timedOut: false,
           errorCode: code,
@@ -1078,7 +1178,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     const { sessionId, toolName, mode, reason, justification, category, path, args, cwd, judgeReason, judge } = ctxInfo
     audit(`OUTCOME ${toolName} outcome=${outcome} source=web | ${reason.slice(0, 80)}`)
     const detail = {
-      category, path, source: 'web', args, cwd, judgeReason, judge,
+      category, path, source: 'web', callId: ctxInfo.callId || '', args, cwd, judgeReason, judge,
       argsCaptured: ctxInfo.argsCaptured,
       // 人工结局也是结局：批准的事件不该带「为什么被拒」（此前 path=criteria-human 的
       // manual-approved 事件会写上一个拒绝原因，回看时像是被拒过）。
@@ -1110,6 +1210,14 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       category: info.category || '',
       path: info.path,
       src: info.src || '',
+      callId: info.callId || '',
+      // 客户端要在审批框里显示「自动判定：审核表转人工 · medium / 关键词转人工（命中词）」，
+      // 读的就是这三个顶层字段（`e.level` / `e.keyword`）。它们此前只到 `info` 就被这份白名单
+      // 丢掉了——`level` 只留在 `judge.level` 里，`keyword` 只有 keyword-reject 那条（永不弹框）
+      // 才写，于是那行永远只剩一个裸标签。**新增字段时同步 client 的 `verdictLineFromEvent`。**
+      level: info.level || '',
+      levelSrc: info.levelSrc || '',
+      keyword: info.keyword || '',
       args: info.args,
       cwd: info.cwd,
       judgeReason: info.judgeReason,
@@ -1121,7 +1229,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       const outcome = await next()
       try {
         // 归因要跟着人工结局回填：批准 → 没有拒绝这回事；拒绝 → 让模型知道是人拒的。
-        settleDeny(info.sessionId, info.callId, outcome)
+        settleDeny(info.sessionId, info.callId, outcome, info.toolName)
         applyHumanOutcome(info, outcome)
         emitDecision(decisionLeaf(info, { verdict: 'human', path: info.path, outcome }))
       } catch (error) {
@@ -1132,7 +1240,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       console.error(`[${NAME}] 网页审批框失败`, error)
       try {
         // 审批框自己炸了：归因也要收口，否则会以「还在等人」的样子永久挂住。
-        settleDeny(info.sessionId, info.callId, 'unavailable')
+        settleDeny(info.sessionId, info.callId, 'unavailable', info.toolName)
         applyHumanOutcome(info, 'unavailable')
         emitDecision(decisionLeaf(info, { verdict: 'human', path: info.path, outcome: 'unavailable' }))
       } catch (again) {
@@ -1202,6 +1310,69 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     justification: 'One sentence, for the human: why this operation must execute.',
   }
 
+  /**
+   * `refused` 的九种 code → 各自一句实话。
+   *
+   * 它们此前共用一句「本部署不提供人工复核 … 不要重试」，于是三种情况都是**假话**：
+   * `already-denied`（人已经明确拒绝过这个操作——工具里本来就有正确的 denied 话术）、
+   * `in-flight`（同一个操作的复核框此刻正在等人）、以及 `need-justification` /
+   * `bad-tool` / `bad-arguments`（模型改一下参数就能成功）。模型收到「功能不存在」后会把
+   * 「人拒绝了」转述成「这个部署没有人工复核」，也会放弃一个马上就会有结论的关键步骤。
+   * 只有 `disabled` 才是真的「本部署未开启」。
+   */
+  function renderRefused(code, tool) {
+    switch (code) {
+      case 'already-denied':
+        return [
+          `Human review DENIED for "${tool}".`,
+          `A person reviewed this and said no. Do not retry it and do not request review for the same operation again in this session.`,
+        ].join(' ')
+      case 'in-flight':
+        return [
+          `A human review request for "${tool}" with these exact arguments is already waiting for a person (in-flight).`,
+          `Do not send it again and do not drop the step: wait for that answer.`,
+        ].join(' ')
+      case 'need-justification':
+        return [
+          `Human review was refused for "${tool}" (need-justification): the "justification" argument is required and must say why a person has to decide.`,
+          `Fill it in, then request review again.`,
+        ].join(' ')
+      case 'bad-tool':
+        return [
+          `Human review was refused for "${tool}" (bad-tool): "tool" is missing or names the review tool itself.`,
+          `Pass the name of the tool you want reviewed, then request review again.`,
+        ].join(' ')
+      case 'bad-arguments':
+        return [
+          `Human review was refused for "${tool}" (bad-arguments): "arguments" must be an object holding the exact arguments of the call.`,
+          `Fix it, then request review again.`,
+        ].join(' ')
+      case 'tool-renamed':
+        return [
+          `Human review was refused for "${tool}" (tool-renamed): the review tool was renamed in settings and the plugin has not reloaded yet.`,
+          `Do not retry now; either continue without this step or tell the user to reload the plugin.`,
+        ].join(' ')
+      case 'grant-failed':
+        return [
+          `Human review was refused for "${tool}" (grant-failed): the approval could not be recorded, so it would not have covered the retry.`,
+          `Do not retry; either continue without this step or tell the user what you need.`,
+        ].join(' ')
+      case 'no-session':
+        return [
+          `Human review is not available for "${tool}" in this call (no-session: there is no session to route the question through).`,
+          `Do not retry; either continue without this step or tell the user what you need.`,
+        ].join(' ')
+      case 'no-callid':
+        return [
+          `Human review is not available for "${tool}" in this call (no-callid: the call has no id, so the question cannot be routed to a person).`,
+          `Do not retry; either continue without this step or tell the user what you need.`,
+        ].join(' ')
+      case 'disabled':
+      default:
+        return `Human review is not available for "${tool}" in this deployment (${code}). Do not retry; either continue without this step or tell the user what you need.`
+    }
+  }
+
   /** 结果 → 模型可见文本。分支写死在这里，模型不需要（也不该）去猜状态词汇。 */
   function renderReviewResult(args, value) {
     const v = value && typeof value === 'object' ? value : {}
@@ -1219,9 +1390,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         `A person reviewed this and said no. Do not retry it and do not request review for the same operation again in this session.`,
       ].join(' ')
     }
-    if (status === 'refused') {
-      return `Human review is not available for "${tool}" in this deployment (${String(v.code || 'refused')}). Do not retry; either continue without this step or tell the user what you need.`
-    }
+    if (status === 'refused') return renderRefused(String(v.code || 'refused'), tool)
     return [
       `Human review UNAVAILABLE for "${tool}": no answer arrived.`,
       `Do not retry on your own. Either continue without this step or report the blocked step to the user.`,
@@ -1292,7 +1461,10 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         const why = String((args && args.justification) || '').trim()
         const refuse = (code) => ({ status: 'refused', tool: target, code })
         if (!hrNow.enabled) return refuse('disabled')
-        if (!sessionId || !exec || !exec.callId) return refuse('no-session')
+        if (!sessionId) return refuse('no-session')
+        // 有会话但拿不到这次调用的 id：复核请求按 callId 关联在途暂存，没有它就问不出去。
+        // 与「本部署没开启」分开报（`no-session` 那句在有会话时是假话）。
+        if (!exec || !exec.callId) return refuse('no-callid')
         if (!target || target === hrNow.toolName) return refuse('bad-tool')
         // 用户刚改了工具名、插件还没重载：此时不发请求，避免人在框里看到的名字对不上。
         if (registeredReviewTool && hrNow.toolName !== registeredReviewTool) return refuse('tool-renamed')
@@ -1340,7 +1512,9 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           })
           settlePortal({ sessionId, callId }, outcome)
           // 认领用的记录不是拒绝归因，任何结局都要把它清掉。
-          forgetDeny(sessionId, callId)
+          // 与写侧同一套键：有 callId 时精确键，缺 callId 时才走 session+工具名兜底键
+          // （只传两个实参等于让第三个形参恒不可达，与 AGENTS 的那半句不符）。
+          forgetDeny(sessionId, callId, registeredReviewTool || hrNow.toolName)
           if (outcome === 'allowed-once') {
             // 只对这一个调用有效，用一次即销毁。签发失败（参数不可序列化）就等于没批。
             if (!ledger.grant(sessionId, target, grantArgs)) return refuse('grant-failed')
@@ -1436,7 +1610,15 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       // 摘要取第一行（不含升级路径那句），UI 上的 notice 卡片不跟着变长。
       // 摘要同样过 `clipNoticeText`：直接 `slice(0,120)` 会把 emoji 代理对切成孤立高位。
       const summary = clipNoticeText(notice.split('\n')[0], 120)
+      /**
+       * `id` 是硬要求，不是装饰：DSH 收件箱对 pending 消息强制 id 唯一（`Message.id` 必填，
+       * 官方工厂 `createUserMessage` 用 `randomUUID()` 生成）。缺 id 时消息的 id 就是
+       * `undefined`，**同一步里出现两次拒绝**（并发工具调用）第二条通知一插入，收件箱折叠
+       * 就抛 `message "undefined" is already pending`——整轮失败，且那条通知永久丢失。
+       * 外部插件不 import DSH 内部包，所以这里复刻官方工厂的取法。
+       */
       const message = {
+        id: randomUUID(),
         role: 'user',
         content: [{ type: 'text', text: `[${NAME}] ${notice}` }],
         source: { kind: 'plugin', plugin: NAME, form: 'notice', summary },
@@ -1455,8 +1637,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
     let reqInfo = null
     try {
       // 非「自动审批」预设交给系统默认 ask，本插件不管。
-      reloadAllowlist()
-      reloadPluginCfg()
+      reloadBoth()
       const session = req.agent && req.agent.session
       if (!session) return next()
       let preset
@@ -1489,6 +1670,13 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         args: toolArgs,
       }
 
+      /**
+       * 事件行的公共字段（**必须声明在所有分支之前**：凭证放行那条分支在关键词层之上，
+       * 而它也要 spread 这一份——`const` 在 TDZ 里读过一次就是 ReferenceError，
+       * 会被外层 catch 变成「转人工」，现场只剩一条 plugin-error）。
+       */
+      const eventDetail = { args: toolArgs, cwd: sessionCwd, callId: req.callId || '' }
+
       const toHuman = (path, category, extra) => {
         forwarded = true
         const extraJudge = (extra && extra.judge) || null
@@ -1519,6 +1707,8 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           // 「模型答了 other」和「判定压根没跑成」的唯一证据。
           src: extraJudge && extraJudge.src ? extraJudge.src : '',
           level: extraJudge && extraJudge.level ? extraJudge.level : '',
+          levelSrc: extraJudge && extraJudge.levelSrc ? extraJudge.levelSrc : '',
+          keyword: (extra && extra.keyword) || '',
         }, next)
       }
       // 最外层 catch 也要按 other 的格子处理（含 reqInfo/humanFallback），所以两者在
@@ -1574,20 +1764,21 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       // （人批准过一次没有参数的同名操作就会有）。放行一次「没人看见参数」的调用与
       // 「参数没采集到一律拒绝」直接冲突。
       //
-      // 采集**撞了 8MB 护栏**（`collectOver`）时凭证仍然有效，这是有意的：那次调用已经在人工框里
-      // 出现过、由人明确批过（那条路弹框时参数照样上卡片与事件），
-      // 而把它挡回去只会变成「批准 → 重试 → 又撞护栏 → 又弹框」的死循环。区别在于人**看得见**
-      // 这次操作（`argsCaptured` 为真），而上面那条「没采集到」是人什么都看不到。
-      if (cached.found && ledger.take(sessionId, toolName, toolArgs)) {
+      // 采集**撞了 8MB 护栏**（`collectOver`）时凭证**不成立**：护栏丢掉的那些字段既没上卡片、
+      // 也没进事件，人也从没看见过它们——凭证键只是「拍平投影」，一次 `{command}` 的批准会
+      // 放行一次「同投影 + 一个 8MB 隐藏字段」的调用。这与闸门的规则一致（撞护栏的调用按
+      // `truncatedAction` 处理、禁止被允许桶放行），代价只是多问一次人。
+      if (!collectOver && cached.found && ledger.take(sessionId, toolName, toolArgs)) {
         audit(`ALLOW   ${toolName} mode=${mode || 'none'} human-grant | ${reason.slice(0, 160)}`)
+        // 走 `...eventDetail`：它带着 args/cwd/**callId**。凭证放行这一条曾经自己写 args/cwd，
+        // 于是成了唯一一条没有 callId 的事件行——「每行都能对上那次调用」是客户端的关联前提。
         recordEvent(sessionId, toolName, mode, reason, justification, 'human-grant', {
-          kind: 'auto', outcome: 'allowed-once', path: 'human-grant', args: toolArgs, cwd: sessionCwd,
+          kind: 'auto', outcome: 'allowed-once', path: 'human-grant', ...eventDetail,
         })
         emitDecision(decisionLeaf(baseInfo, { verdict: 'human-grant', path: 'human-grant', outcome: 'allowed-once' }))
         return 'allowed-once'
       }
 
-      const eventDetail = { args: toolArgs, cwd: sessionCwd }
       // 顺序：**关键词拒绝 → 参数没采集到（永远拒绝）→ 关键词人工 → 收集/预算闸门 → 关键词允许 → 判定**。
       //
       // 关键词（拒绝与人工）走在闸门前面，是因为它是用户**显式**写的意图：把某个工具名或某个词
@@ -1598,7 +1789,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       // 唯一的例外是「参数没采集到」：那一态连参数都没有，弹人工框等于让人对一份看不见的内容
       // 拍板（也做不出一次性凭证的键），所以它无条件拒绝，人工桶也不例外。
       const hay = formatKeywordHay(toolName, reason, toolArgs, sessionCwd, toolScalars)
-      const pathHay = formatPathKeywordHay(toolArgs, sessionCwd)
+      const pathHay = formatPathKeywordHay(toolArgs, sessionCwd, toolScalars)
       const kw = matchKeywordBuckets(hay, allowlist, formatAllowKeywordHay(toolArgs, toolScalars), pathHay)
 
       if (kw && kw.action === 'reject') {
@@ -1632,7 +1823,11 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           kind: 'auto', outcome: 'rejected', path: 'truncated-payload', judgeReason: why, src: 'uncaptured',
           argsCaptured: false, ...eventDetail,
         })
-        emitDecision(decisionLeaf(baseInfo, { verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected' }))
+        // 叶子必须带 `src`：`denyReasonKey` 按 src 派生那句归因，「参数没采集到」（重发即可）
+        // 与「操作太大别再发」是两句不同的话，丢了 src 就都变成 payload-truncated。
+        emitDecision(decisionLeaf(baseInfo, {
+          verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected', src: 'uncaptured',
+        }))
         rememberDeny(sessionId, req.callId, { path: 'truncated-payload', toolName, src: 'uncaptured' })
         return 'rejected'
       }
@@ -1640,7 +1835,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       // 「这个我要自己看」，就该让他看。它排在「参数没采集到」之后（见上面的顺序说明）。
       if (kw && kw.action === 'human') {
         audit(`HUMAN   ${toolName} mode=${mode || 'none'} keyword | ${reason.slice(0, 160)}`)
-        return toHuman('keyword-human', '')
+        return toHuman('keyword-human', '', { keyword: kw.keyword || '' })
       }
       // 撞了收集护栏（连插件自己都没收全）同样不许判：与超预算同一个开关、同一个 path。
       if (collectOver) {
@@ -1651,7 +1846,9 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           recordEvent(sessionId, toolName, mode, reason, justification, 'truncated-payload', {
             kind: 'auto', outcome: 'rejected', path: 'truncated-payload', judgeReason: why, src: 'oversize', ...eventDetail,
           })
-          emitDecision(decisionLeaf(baseInfo, { verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected' }))
+          emitDecision(decisionLeaf(baseInfo, {
+            verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected', src: 'oversize',
+          }))
           rememberDeny(sessionId, req.callId, { path: 'truncated-payload', toolName, src: 'oversize' })
           return 'rejected'
         }
@@ -1670,7 +1867,9 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           recordEvent(sessionId, toolName, mode, reason, justification, 'truncated-payload', {
             kind: 'auto', outcome: 'rejected', path: 'truncated-payload', judgeReason: why, src: 'truncated', ...eventDetail,
           })
-          emitDecision(decisionLeaf(baseInfo, { verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected' }))
+          emitDecision(decisionLeaf(baseInfo, {
+            verdict: 'truncated-payload', path: 'truncated-payload', outcome: 'rejected', src: 'truncated',
+          }))
           rememberDeny(sessionId, req.callId, { path: 'truncated-payload', toolName, src: 'truncated' })
           return 'rejected'
         }
@@ -1690,7 +1889,11 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       }
       const judged = await judgeOperation(toolName, mode, justification, toolArgs, sessionCwd, req.signal)
       const criterion = judged.criterion || 'other'
-      const judgeReason = judged.reason || ''
+      /** 判定路径上的送审超预算：不是 (行, 等级) 的结论，与送审前的闸门同一条规则。 */
+      const oversize = Boolean(judged.oversize) || judged.src === 'truncated'
+      // 超预算没有「模型理由」（`reason` 是空的），尺寸证据在 `errorDetail` 里
+      // （`err.judgePayloadOversize request=N>B`）——它必须顶到事件的 `judgeReason` 上。
+      const judgeReason = oversize ? (judged.errorDetail || '') : (judged.reason || '')
       if (judged.aborted) {
         // 请求已被取消（工具执行 signal abort）。审批服务会以 cancelled 结算并丢弃迟到结果，
         // 这里不再占坑、也不再调 next()，避免取消后还弹人工框。
@@ -1702,19 +1905,30 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
       const tail = judged.failed
         ? `${judged.errorCode || 'err.judgeFailed'}${judgeFailureNote(judged) ? ' ' + judgeFailureNote(judged) : ''}`
         : (judgeReason || reason.slice(0, 120))
-      const eventJudge = { category: criterion, judgeReason, judge: judged, src: judged.src, ...eventDetail }
+      const eventJudge = {
+        category: criterion, judgeReason, judge: judged, src: judged.src,
+        level: judged.level || '', levelSrc: judged.levelSrc || '', ...eventDetail,
+      }
+      /**
+       * 判定路径上的「送审超预算」与送审前的闸门**同一条规则**、同一个 path
+       * （`truncated-payload`）。此前它借用 `criteria-reject/allow` 的 path，归因于是被读成
+       * 「类别判定」，尺寸证据只剩 `judge.errorDetail`——与 AGENTS「三者（含超预算）同走
+       * truncated-payload」和排障契约（`request=N>B`）都不符。
+       */
+      const pathOf = (action) => (oversize ? 'truncated-payload' : 'criteria-' + action)
+      const auditTail = oversize ? (judged.errorDetail || tail) : tail
       if (judged.action === 'reject') {
-        audit(`REJECT  ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
-        recordEvent(sessionId, toolName, mode, reason, justification, 'criteria-reject', {
-          kind: 'auto', outcome: 'rejected', path: 'criteria-reject', ...eventJudge,
+        audit(`REJECT  ${toolName} mode=${mode || 'none'} ${oversize ? 'truncated-payload' : cells} | ${auditTail}`)
+        recordEvent(sessionId, toolName, mode, reason, justification, pathOf('reject'), {
+          kind: 'auto', outcome: 'rejected', path: pathOf('reject'), ...eventJudge,
         })
         emitDecision(decisionLeaf(baseInfo, {
-          verdict: 'criteria-reject', path: 'criteria-reject', outcome: 'rejected',
+          verdict: pathOf('reject'), path: pathOf('reject'), outcome: 'rejected',
           category: criterion, level: judged.level, levelSrc: judged.levelSrc || '', src: judged.src, judgeReason,
         }))
         // 归因只带闭集字段：类别 id 与等级（用户自己的词表），**不带**审核模型那段理由散文。
         rememberDeny(sessionId, req.callId, {
-          path: 'criteria-reject',
+          path: pathOf('reject'),
           toolName,
           src: judged.src || '',
           criterion,
@@ -1724,18 +1938,21 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         return 'rejected'
       }
       if (judged.action === 'allow') {
-        audit(`ALLOW   ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
-        recordEvent(sessionId, toolName, mode, reason, justification, 'criteria-allow', {
-          kind: 'auto', outcome: 'allowed-once', path: 'criteria-allow', ...eventJudge,
+        audit(`ALLOW   ${toolName} mode=${mode || 'none'} ${oversize ? 'truncated-payload' : cells} | ${auditTail}`)
+        recordEvent(sessionId, toolName, mode, reason, justification, pathOf('allow'), {
+          kind: 'auto', outcome: 'allowed-once', path: pathOf('allow'), ...eventJudge,
         })
         emitDecision(decisionLeaf(baseInfo, {
-          verdict: 'criteria-allow', path: 'criteria-allow', outcome: 'allowed-once',
+          verdict: pathOf('allow'), path: pathOf('allow'), outcome: 'allowed-once',
           category: criterion, level: judged.level, src: judged.src, judgeReason,
         }))
         return 'allowed-once'
       }
-      audit(`HUMAN   ${toolName} mode=${mode || 'none'} ${cells} | ${tail}`)
-      return toHuman('criteria-human', criterion, { judgeReason: judgeReason || tail, judge: judged })
+      audit(`HUMAN   ${toolName} mode=${mode || 'none'} ${oversize ? 'truncated-payload' : cells} | ${auditTail}`)
+      return toHuman(pathOf('human'), criterion, {
+        judgeReason: (oversize ? judged.errorDetail : judgeReason) || tail,
+        judge: judged,
+      })
     } catch (error) {
       console.error(`[${NAME}] 判断过程出错，按 other 的格子处理`, error)
       if (forwarded) return 'unavailable'
@@ -1746,6 +1963,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         const resolved = resolveFallbackAction(row, '', allowlist.levels, 'plugin')
         const detail = {
           judgeReason: code,
+          callId: (reqInfo && reqInfo.callId) || req.callId || '',
           judge: {
             errorCode: code,
             src: 'plugin',
@@ -1771,24 +1989,24 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           }
         })()
         const label = `${info.toolName || 'unknown'} criteria=other level=${resolved.level}${resolved.levelSrc === 'fallback' ? '(兜底)' : ''} src=plugin`
-        if (resolved.action === 'reject') {
-          audit(`REJECT  ${label} | ${code}`)
-          recordEvent(info.sessionId, info.toolName, info.mode, info.reason, info.justification, 'plugin-error', {
-            kind: 'auto', outcome: 'rejected', path: 'plugin-error', src: 'plugin', ...detail,
-          })
-          emitDecision(decisionLeaf(info, { verdict: 'plugin-error', path: 'plugin-error', outcome: 'rejected', src: 'plugin' }))
-          rememberDeny(info.sessionId, info.callId, { path: 'plugin-error', toolName: info.toolName, src: 'plugin' })
-          return 'rejected'
-        }
-        if (resolved.action === 'allow') {
-          audit(`ALLOW   ${label} | ${code}`)
-          recordEvent(info.sessionId, info.toolName, info.mode, info.reason, info.justification, 'plugin-error', {
-            kind: 'auto', outcome: 'allowed-once', path: 'plugin-error', src: 'plugin', ...detail,
-          })
-          emitDecision(decisionLeaf(info, { verdict: 'plugin-error', path: 'plugin-error', outcome: 'allowed-once', src: 'plugin' }))
-          return 'allowed-once'
+        /**
+         * **只有转人工这一条路**：`resolveFallbackAction` 对 `plugin` 恒返回 `human`
+         * （「判定压根没跑成」固定转人工，不查 other 的三格）。这里曾经还留着
+         * `action === 'reject' / 'allow'` 两条分支——永远不可执行，却让人读成
+         * 「插件异常可以自动放行/拒绝」。真出现别的动作就说明那条不变式被改了，
+         * 那时也要**失败关闭**：留痕、转人工，绝不放行。
+         */
+        if (resolved.action !== 'human') {
+          console.error(`[${NAME}] plugin-error 的动作不是 human（${resolved.action}）：不变式被改，按转人工处理`)
         }
         audit(`HUMAN   ${label} | ${code}`)
+        /**
+         * 防御分支：`humanFallback` 挂上之后的代码里，`recordEvent` / `emitDecision` / `audit`
+         * 各自吞掉自己的异常（那是它们该做的），所以这条分支今天只有在「将来有人让某个 helper
+         * 重新抛错」时才会走到——保留它，是为了那种改动不至于把一次插件异常变成一句静默的
+         * 「用户拒绝」。**它是防御性的**：现有代码路径到不了，因此没有（也不可能有）行为用例；
+         * 下面那段才是实际会走到的落点。
+         */
         if (humanFallback) return await humanFallback('plugin-error', 'other', detail)
         /**
          * `humanFallback` 还没挂上（异常发生在它被赋值之前，例如读 `session.header` 就抛）：
@@ -1805,7 +2023,15 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         // 没结论要落 `humanUnavailable`。正常转人工走 forwardToHuman → settleDeny，
         // 这条分支没有 forwardToHuman，所以要自己收口。
         const outcome = await next()
-        settleDeny(info.sessionId, info.callId, outcome)
+        try {
+          // 结论要**同时**落事件与审计（`applyHumanOutcome`）：只 `settleDeny` 的话，审批历史里
+          // 那一行永远停在「等待人工审批」（客户端 `latestUnsettledPending` 每次挂载都重新显示它，
+          // 哪怕人早就批了），也没有 `OUTCOME` 审计行。
+          settleDeny(info.sessionId, info.callId, outcome, info.toolName)
+          applyHumanOutcome({ ...info, path: 'plugin-error', category: 'other', judgeReason: code, judge: detail.judge }, outcome)
+        } catch (error) {
+          console.error(`[${NAME}] 记录人工结果失败`, error)
+        }
         return outcome
       } catch (again) {
         console.error(`[${NAME}] 按 other 处理仍失败，交回系统默认`, again)
@@ -1826,8 +2052,7 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
 
     async function dispatch(endpoint, payload) {
       try {
-        reloadAllowlist()
-        reloadPluginCfg()
+        reloadBoth()
         const body = payload && typeof payload === 'object' ? payload : {}
         if (endpoint === 'snapshot') {
           return {
@@ -1876,7 +2101,10 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
 
           }
           const since = Number.parseInt(String(body.since || '0'), 10) || 0
-          return { ok: true, value: { events: readEventsSince(paths.events, sessionId, since) } }
+          const rows = readEventsSince(paths.events, sessionId, since)
+          // `callId`：审批框要显示「自动判定：…」时按它取自己那一两行，不用把整段历史拉过去。
+          const callId = String(body.callId || '')
+          return { ok: true, value: { events: callId ? rows.filter((e) => String(e.callId || '') === callId) : rows } }
         }
         if (endpoint === 'rule-op') {
           const op = String(body.op || '')
@@ -1947,6 +2175,10 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
 
         }
         if (endpoint === 'setup') {
+          // 配置损坏时**不许**拿默认值去改写 patch：启动路径就是这么拒的（`pluginCfgCorrupt`
+          // 时不写沙箱），而一次点击会把用户写好的 read-only **加宽**成默认的 workspace-write
+          // ——放宽权限这个方向最不能猜。
+          if (pluginCfgCorrupt) return rpcFail('err.pluginCorrupt')
           const setupResult = setAutoApproveSandbox(paths.profilePatch, pluginCfg.presetSandbox)
           if (!setupResult.ok) {
             return rpcFail(setupResult.code || 'err.preset', setupResult.details || { error: String(setupResult.error || '') })
@@ -1981,6 +2213,16 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
           }
           let preset = null
           if (body && Object.prototype.hasOwnProperty.call(body, 'presetSandbox')) {
+            /**
+             * 认得出的值才写：`{presetSandbox:'nope'}` 这种请求经 `mergePluginConfig` 会被归一成
+             * 默认 workspace-write，写盘就等于**放宽沙箱**（设置页下拉只有三个已知值，正常路径到不了，
+             * 但 RPC 是外部可调的）。这里明确报错，而不是静默按默认值写。
+             */
+            if (!isKnownPresetSandbox(body.presetSandbox)) {
+              pluginCfg = prev
+              persistPluginCfg({ overwriteCorrupt: Boolean(body.overwriteCorrupt) })
+              return rpcFail('err.presetSandbox', { error: `unknown presetSandbox: ${String(body.presetSandbox)}` })
+            }
             preset = setAutoApproveSandbox(paths.profilePatch, pluginCfg.presetSandbox)
             if (preset && !preset.ok) {
               // 沙箱没写进 patch 就整个回滚：不能让 config.json 说 read-only、patch 还是全权限。
@@ -1991,6 +2233,8 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
             }
           }
           if (typeof body.judgeTimeoutMs === 'number') {
+            // 回滚快照必须在 `applyRuleOp` **之前**取（它会原地改 allowlist 并落盘）。
+            const prevTimeoutMs = allowlist.judgeTimeoutMs
             const timeoutResult = applyRuleOp('set', 'judgeTimeoutMs', body.judgeTimeoutMs)
             if (!timeoutResult.ok) {
               // config.json 已经落盘（judge/prompt 那一步），这一格失败必须**整体回滚**，
@@ -2003,9 +2247,16 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
             pluginCfg.judge.timeoutMs = allowlist.judgeTimeoutMs
             if (!persistPluginCfg()) {
               pluginCfg = prev
+              // 超时的**权威来源是 allowlist**（`effectiveJudgeTimeoutMs`）：config 写不动时要把它
+              // 一起回滚，否则磁盘上 allowlist 已是新值、config 是旧值——用户刚看到「保存失败」，
+              // 新超时却已经生效（与 rule-op 分支同一条规则）。
+              pluginCfg.judge.timeoutMs = prevTimeoutMs
+              allowlist.judgeTimeoutMs = prevTimeoutMs
+              if (!saveJson(paths.allowlist, allowlist)) {
+                console.error(`[${NAME}] judgeTimeoutMs 回滚写盘失败，allowlist 已留在新值`)
+              }
               persistPluginCfg({ overwriteCorrupt: Boolean(body.overwriteCorrupt) })
               return rpcFail('err.pluginWrite')
-
             }
           }
           audit('CONFIG  plugin 已更新')

@@ -2,6 +2,8 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   looksDeny,
+  shellNormalizeForKeywords,
+  matchDenyKeyword,
   DEFAULT_DENY_KEYWORDS,
   parseReason,
   parseJudgeOutput,
@@ -47,6 +49,9 @@ import {
   JUDGE_LEVELS_PLACEHOLDER,
   normalizeJudgePromptLang,
   buildJudgePrompt,
+  JUDGE_FAILURE_SRCS,
+  isJudgeFailureSrc,
+  resolveFallbackAction,
   shippedJudgePromptTemplate,
   resolveJudgePromptTemplate,
   judgePromptOverLimit,
@@ -70,6 +75,10 @@ import {
   formatJudgeCard,
   formatReviewOperation,
   judgeMaxTokens,
+  normalizeJudgeMaxTokens,
+  JUDGE_MAX_TOKENS_REASONING,
+  JUDGE_MAX_TOKENS_MIN,
+  JUDGE_MAX_TOKENS_MAX,
   routeSupportsReasoning,
   judgeEmptyRetryMaxTokens,
   isTruncatedFinish,
@@ -80,6 +89,11 @@ import {
   rememberCachedCall,
   takeCachedCall,
   CALL_CACHE_LIMIT,
+  normalizeCriteria,
+  normalizePresetSandbox,
+  isKnownPresetSandbox,
+  defaultPluginConfig,
+  normalizeHumanReview,
 } from '../src/rules.mjs'
 
 describe('looksDeny 词边界', () => {
@@ -106,6 +120,32 @@ describe('looksDeny 词边界', () => {
     // 清根（连 /* 与 sudo 一起覆盖）仍是确定性硬拒，不依赖模型
     for (const cmd of ['rm -rf /', 'rm -rf /*', 'sudo rm -rf /']) {
       assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), true, cmd)
+    }
+  })
+
+  it('关键词红线的**拼写变形**也要命中（引号/转义/IFS/行续接/`--`）', () => {
+    // 关键词层是「零上下文就确定灾难、不让模型有发言权」的那几条，而 shell 会先做引号拼接与
+    // 展开：`rm -rf "/"` 与 `rm -rf /` 在 shell 眼里完全一样。文本匹配打不到时，同一场灾难就
+    // 从「硬拒」降级成「交给模型判」——实测六种拼写全部 allowed-once（第 4 轮对抗复审）。
+    for (const cmd of [
+      'rm -rf "/"', "rm -rf '/'", 'rm -rf ""/', 'rm -rf ${IFS}/', 'rm -rf $IFS/',
+      'rm -rf \\\n/', 'rm -rf -- /', 'rm -rf --no-preserve-root /',
+      'dd if=/dev/zero of="/dev/sda"', "m'k'fs.ext4 /dev/sdb", 'w"ipe"fs -a /dev/sdb',
+    ]) {
+      assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), true, cmd)
+    }
+    // 归因报的仍是**词表里那个词**（模型看到的理由不能是变形后的文本）
+    assert.equal(matchDenyKeyword('rm -rf "/"', DEFAULT_DENY_KEYWORDS), 'rm -rf /')
+    assert.equal(matchDenyKeyword('m\'k\'fs.ext4 /dev/sdb', DEFAULT_DENY_KEYWORDS), 'mkfs')
+    // 反斜杠转义（shell 先去掉反斜杠）：`\r\m -rf /` 在 shell 里就是 `rm -rf /`。
+    // 第 11 轮全量回归发现这条变换没有用例（删掉 `\\(.)` 那步全套仍绿）——补上。
+    assert.equal(looksDeny('\\r\\m -rf /', DEFAULT_DENY_KEYWORDS), true, '逐字符反斜杠转义')
+    assert.equal(matchDenyKeyword('\\r\\m -rf /', DEFAULT_DENY_KEYWORDS), 'rm -rf /', '归因报词表里的词')
+    assert.equal(looksDeny('dd if=/dev/zero of=\\/dev\\/sda', DEFAULT_DENY_KEYWORDS), true, '转义路径分隔符')
+    assert.equal(looksDeny('w\\ipefs -a /dev/sdb', DEFAULT_DENY_KEYWORDS), true)
+    // 归一化不许制造误伤：引号/`--`/反斜杠出现在无关命令里照旧不命中
+    for (const cmd of ['git checkout -- file', 'npm run build -- --prod', 'Remove-Item -Recurse -Force .\\build', 'dd if=/dev/sda of=backup.img', 'of=/dev/null', 'echo "hello world"', 'echo C:\\Users\\x\\file.txt']) {
+      assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), false, cmd)
     }
   })
 
@@ -186,8 +226,16 @@ describe('judge parse', () => {
       assert.equal(got.level, 'high', word)
       assert.equal(got.levelSrc, 'fallback', word)
     }
-    // 最后一个可识别的等级才是结论
-    assert.equal(decide('类别: deletion\n风险等级: low\n风险等级: high\n理由: x').level, 'high')
+    // 互相矛盾的等级 → 整条作废、交给 levels.fallback（不取最后一个：回显里的伪等级
+    // 不许压低风险等级）。断言要看**解析结果本身**：出厂 fallback 恰好是 high 时，
+    // 只看 level 会让「解析出的 high」与「兜底来的 high」分不开。
+    const conflicted = '类别: deletion\n风险等级: low\n风险等级: high\n理由: x'
+    assert.equal(parseJudgeClassify(conflicted, DEFAULT_CRITERIA, DEFAULT_LEVELS).level, '')
+    assert.equal(decide(conflicted).levelSrc, 'fallback')
+    // 把兜底档换成 low（与两个矛盾值都不同名）才能证明上面那条不是靠 fallback 蒙对
+    const lowFallback = { fallback: 'low', descriptions: DEFAULT_LEVELS.descriptions }
+    assert.equal(decide(conflicted, DEFAULT_CRITERIA, lowFallback).level, 'low')
+    assert.equal(decide(conflicted, DEFAULT_CRITERIA, lowFallback).levelSrc, 'fallback')
     // 大小写与行尾修饰不影响识别
     assert.equal(decide('类别: deletion\nRisk level: HIGH (irreversible)\n理由: x').level, 'high')
     // 行中出现的 level 不算（必须行首）
@@ -319,26 +367,54 @@ describe('judge parse', () => {
 })
 
 describe('judgeMaxTokens', () => {
-  it('带推理档位时给推理 token 留预算', () => {
+  it('带推理档位时给推理 token 留预算（默认 8192：实测 1024 必然被推理吃光 → 空输出白跑一次重试）', () => {
     assert.equal(judgeMaxTokens(''), 256)
     assert.equal(judgeMaxTokens('off'), 256)
-    assert.equal(judgeMaxTokens('high'), 1024)
+    assert.equal(judgeMaxTokens('high'), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(JUDGE_MAX_TOKENS_REASONING, 8192)
     assert.equal(judgeMaxTokens(undefined), 256)
   })
 
   it('路由会推理时，off / 没配档位也要留预算（off 只是不传思考参数，模型仍按默认思考）', () => {
     const info = { reasoning: { efforts: [{ id: 'off' }, { id: 'high' }, { id: 'max' }] } }
-    assert.equal(judgeMaxTokens('', info), 1024)
-    assert.equal(judgeMaxTokens('off', info), 1024)
-    assert.equal(judgeMaxTokens(undefined, info), 1024)
-    assert.equal(judgeMaxTokens('high', info), 1024)
+    assert.equal(judgeMaxTokens('', info), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(judgeMaxTokens('off', info), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(judgeMaxTokens(undefined, info), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(judgeMaxTokens('high', info), JUDGE_MAX_TOKENS_REASONING)
   })
 
-  it('不推理的路由仍是 256', () => {
+  it('不推理的路由仍是 256（配置项问的是「推理要多留多少」，对它没有意义）', () => {
     assert.equal(judgeMaxTokens('', { reasoning: { efforts: [{ id: 'off' }] } }), 256)
     assert.equal(judgeMaxTokens('off', { reasoning: { efforts: [] } }), 256)
     assert.equal(judgeMaxTokens('', {}), 256)
     assert.equal(judgeMaxTokens('off', undefined), 256)
+    assert.equal(judgeMaxTokens('off', undefined, 4096), 256, '不推理的路由不因配置变大')
+  })
+
+  it('设置页配的档位只在会推理时生效，未配置 / 越界都归一到区间内', () => {
+    const info = { reasoning: { efforts: [{ id: 'high' }] } }
+    assert.equal(judgeMaxTokens('', info, 4096), 4096)
+    assert.equal(judgeMaxTokens('high', info, 16384), 16384)
+    // 未配置（配置文件里没有这个键 / 0 / 空串）→ 出厂默认
+    assert.equal(judgeMaxTokens('', info, 0), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(judgeMaxTokens('', info, ''), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(judgeMaxTokens('', info, undefined), JUDGE_MAX_TOKENS_REASONING)
+    // 越界 clamp（读盘归一不拒绝，但 index 的 warnClampedSettings 会留痕）
+    assert.equal(judgeMaxTokens('', info, 100000), JUDGE_MAX_TOKENS_MAX)
+    assert.equal(judgeMaxTokens('', info, 1), JUDGE_MAX_TOKENS_MIN)
+  })
+})
+
+describe('normalizeJudgeMaxTokens', () => {
+  it('未配置回落默认、越界 clamp、小数取整', () => {
+    assert.equal(normalizeJudgeMaxTokens(undefined), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(normalizeJudgeMaxTokens(null), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(normalizeJudgeMaxTokens(0), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(normalizeJudgeMaxTokens(-5), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(normalizeJudgeMaxTokens('abc'), JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(normalizeJudgeMaxTokens(4096.9), 4096)
+    assert.equal(normalizeJudgeMaxTokens(JUDGE_MAX_TOKENS_MIN - 1), JUDGE_MAX_TOKENS_MIN)
+    assert.equal(normalizeJudgeMaxTokens(JUDGE_MAX_TOKENS_MAX + 1), JUDGE_MAX_TOKENS_MAX)
   })
 })
 
@@ -389,10 +465,36 @@ describe('judgeEmptyRetryMaxTokens', () => {
 })
 
 describe('formatReviewOperation', () => {
-  it('命令优先，嵌套的 params.command 也认（审批框里要看得见要批准什么）', () => {
-    assert.equal(formatReviewOperation({ command: 'rm -rf /home/alec/x', description: 'd' }, 'zh'), 'rm -rf /home/alec/x')
+  it('命令优先，嵌套的 params.command 也认；**其余参数必须一并交代**', () => {
+    // 只印命令时，人批准的是自己没看见的其余字段——而凭证是按完整参数投影签发的。
+    // 实测（第 4 轮对抗复审）：`{command:'echo ok', file_path:'/etc/shadow', content:'SECRET'}`
+    // 只显示「操作：echo ok」，连「共 K 个参数」都没有。
+    assert.equal(
+      formatReviewOperation({ command: 'rm -rf /home/alec/x', description: 'd' }, 'zh'),
+      'rm -rf /home/alec/x（另有 1 个参数：description: d）',
+    )
+    // 只有命令时保持干净（最常见的 bash 调用）
+    assert.equal(formatReviewOperation({ command: 'rm -rf /home/alec/x' }, 'zh'), 'rm -rf /home/alec/x')
     assert.equal(formatReviewOperation({ params: { command: 'deploy --prod' } }, 'zh'), 'deploy --prod')
-    assert.equal(formatReviewOperation({ args: { command: 'ls' }, command: 'pwd' }, 'zh'), 'pwd')
+    // 顶层 `command` 赢，但嵌套里那个 `args.command` 仍是**被批准参数的一部分**，要一并说出来
+    assert.equal(formatReviewOperation({ args: { command: 'ls' }, command: 'pwd' }, 'zh'), 'pwd（另有 1 个参数：args.command: ls）')
+    // 其余参数放不进预算时至少说出**数量**，不许静默
+    const many = formatReviewOperation({ command: 'x'.repeat(590), file_path: '/etc/shadow', content: 'S'.repeat(50) }, 'zh')
+    assert.match(many, /另有 2 个参数/)
+  })
+
+  it('命令很长时披露不许被调用方的 600 字上限切掉（整条摘要 ≤ limit）', () => {
+    // 复核框正文最终会过 `sanitizeNoticeText(operation, 600)`：摘要自己超过 600 时，被切掉的
+    // 正好是尾巴上的「另有 N 个参数」——人就会以为命令之外没有别的参数（实测 595 字命令
+    // + 2 个参数 = 608 字，披露整句被砍）。披露是凭证范围的唯一说明，不能被静默截掉。
+    for (const n of [30, 200, 560, 580, 595, 700, 1200]) {
+      const op = formatReviewOperation({ command: 'c'.repeat(n), file_path: '/etc/shadow', content: 'SECRET' }, 'zh')
+      assert.ok(op.length <= 600, `${n} 字命令 → ${op.length} 字`)
+      assert.match(op, /另有 2 个参数/, `${n} 字命令`)
+      assert.equal(op.trim(), op, `${n} 字命令：不该带首尾空白（调用方会再 single-line 一次）`)
+    }
+    // 只有命令时保持干净
+    assert.equal(formatReviewOperation({ command: 'c'.repeat(595) }, 'zh').length, 595)
   })
 
   it('没有命令就列工具自己的参数名（write 既能看到路径也能看到内容片段）', () => {
@@ -664,6 +766,64 @@ describe('tool card', () => {
     assert.deepEqual(takeCachedCall(map, 's1', 'call-10').args, { command: 'ls' })
   })
 
+  it('同一个 callId 被记 ≥3 次仍然全都不判（撞车要毒化，不是删掉键）', () => {
+    // 只 `delete` 的旧实现里，键位会在第二次撞车后重新变空，第三条记录照常写进去——
+    // 于是第一次调用的审批 take 到的是**第三条**的参数（判 A、执行 B），
+    // 第二/三次各自变成「没采集到」。三个并行复用 id 的调用正是这么来的。
+    const map = new Map()
+    for (const cmd of ['C1', 'C2', 'C3']) rememberCachedCall(map, 's1', 'call-0', { command: cmd })
+    assert.equal(map.has(callCacheKey('s1', 'call-0')), true, '墓碑要占住键位')
+    for (let i = 0; i < 3; i++) {
+      assert.equal(takeCachedCall(map, 's1', 'call-0').found, false, '第 ' + (i + 1) + ' 次取用也不许拿到参数')
+    }
+    // 墓碑被取用后键位释放：之后一次全新的调用照常能采集
+    rememberCachedCall(map, 's1', 'call-0', { command: 'C4' })
+    assert.deepEqual(takeCachedCall(map, 's1', 'call-0').args, { command: 'C4' })
+  })
+
+  it('__proto__ / constructor 参数不丢：上卡片、进干草、参与凭证键（原型 setter 不改自有属性）', () => {
+    // `out['__proto__'] = v` 走原型 setter：按名字丢键时 `{"__proto__":{…}}` 整条从管道消失，
+    // 于是卡片上没有、干草里搜不到（红线失效），凭证键还与「真的没有参数」撞成同一个 `{}`。
+    const raw = JSON.parse('{"__proto__":{"command":"cat /etc/shadow"}}')
+    assert.equal(Object.prototype.hasOwnProperty.call(raw, '__proto__'), true, 'JSON.parse 出来的是自有属性')
+    const got = pickToolArgsDetailed(raw)
+    assert.deepEqual(got.args, { '__proto__.command': 'cat /etc/shadow' })
+    assert.match(formatJudgeCard('bash', '', '', got.args, '/w'), /shadow/, '必须上卡片')
+    assert.match(formatKeywordHay('bash', '', got.args, '/w', got.scalars), /cat \/etc\/shadow/, '必须进关键词干草')
+    assert.equal(Object.getPrototypeOf(got.args), Object.prototype, '参数表自己的原型不能被改掉')
+    // constructor：读侧由 safeEntry 的自有键检查兜住，不需要改名
+    assert.deepEqual(pickToolArgsDetailed({ constructor: 'x' }).args, { constructor: 'x' })
+    // 改名与 #N 撞车规则共存：字面键 `__proto__#raw` 与改名后的槽位撞车时另起一格，谁也不丢
+    const collide = pickToolArgsDetailed({ ['__proto__']: 'a', ['__proto__#raw']: 'b' })
+    assert.deepEqual(collide.args, { '__proto__#raw': 'a', '__proto__#raw#2': 'b' })
+    // 普通的原型链继承键不算自有键（不能被读成参数）
+    assert.deepEqual(pickToolArgsDetailed({}).args, {})
+    const inherited = Object.create({ toString: 'x' })
+    assert.deepEqual(pickToolArgsDetailed(inherited).args, {})
+  })
+
+  it('标量标记的键不进任何关键词干草（file_path/path/workdir 的数字与布尔也一样）', () => {    // AGENTS：数字/布尔标量「绝不进关键词干草」。此前只有**直接槽位**过滤了 scalars，
+    // 而路径字段还会经「拼上 cwd 的绝对形态」进干草，于是 `{file_path: 42}` 变成 `/w/42`、
+    // `{workdir: 42}` 变成 `42`——声明与实现不符。
+    for (const raw of [{ file_path: 42 }, { path: true }, { workdir: 42 }, { params: { file_path: 42 } }]) {
+      const detail = pickToolArgsDetailed(raw)
+      const hay = formatKeywordHay('t', '', detail.args, '/w', detail.scalars)
+      const pathHay = formatPathKeywordHay(detail.args, '/w', detail.scalars)
+      for (const value of [...detail.scalars]) {
+        assert.doesNotMatch(hay, new RegExp(String(detail.args[value])), `干草不该含 ${value} 的值`)
+      }
+      assert.doesNotMatch(pathHay, /\d/, `路径干草不该含标量值：${JSON.stringify(raw)}`)
+    }
+    // 允许桶的标量过滤同样不能漏：放行只能靠已知命令/路径字段的**字符串**值
+    assert.equal(formatAllowKeywordHay({ command: 42 }, new Set(['command'])), '')
+    assert.equal(formatAllowKeywordHay({ file_path: true }, new Set(['file_path'])), '')
+    assert.equal(formatAllowKeywordHay({ command: 'echo SAFE-ALLOW-TOKEN' }, new Set()), 'echo SAFE-ALLOW-TOKEN')
+    // 字符串路径照旧进干草（放宽只对字符串生效）
+    const str = pickToolArgsDetailed({ file_path: '/etc/shadow' })
+    assert.match(formatKeywordHay('t', '', str.args, '/w', str.scalars), /\/etc\/shadow/)
+    assert.match(formatPathKeywordHay(str.args, '/w', str.scalars), /\/etc\/shadow/)
+  })
+
   it('等级说明跟随提示词语言，用户改过的一个字不动', () => {
     const zh = shippedLevels('zh').descriptions
     const en = shippedLevels('en').descriptions
@@ -671,6 +831,28 @@ describe('tool card', () => {
     assert.equal(syncShippedLevels({ descriptions: en }, 'zh').descriptions.low, zh.low)
     assert.equal(syncShippedLevels({ descriptions: { low: '我自己写的' } }, 'en').descriptions.low, '我自己写的')
     assert.equal(syncShippedLevels({ descriptions: {} }, 'en').descriptions.high, en.high)
+  })
+
+  it('出厂等级说明改版后，文件里的**旧出厂原文**仍被认成出厂原文并被刷新', () => {
+    // low 原来写「影响范围限于本次工作区或临时产物」，与 medium 的「工作区外文件、缓存」
+    // 直接重叠（实测同一个越权写既被判过 low 也判过 medium）。收紧成「只落在本次工作区内」
+    // 之后，老文件里的旧原文必须仍被认得出——否则升级后用户的说明永远刷不成新版。
+    const OLD_ZH = '可原样回补、影响范围限于本次工作区或临时产物的操作'
+    const OLD_EN = 'the operation can be reverted as-is and only affects this workspace or scratch artifacts'
+    const zh = syncShippedLevels({ descriptions: { low: OLD_ZH } }, 'zh')
+    assert.equal(zh.descriptions.low, shippedLevels('zh').descriptions.low)
+    assert.notEqual(zh.descriptions.low, OLD_ZH)
+    const en = syncShippedLevels({ descriptions: { low: OLD_EN } }, 'en')
+    assert.equal(en.descriptions.low, shippedLevels('en').descriptions.low)
+    assert.notEqual(en.descriptions.low, OLD_EN)
+    // 旧中文原文在英文会话里同样认得出，并被换成英文新版
+    assert.equal(syncShippedLevels({ descriptions: { low: OLD_ZH } }, 'en').descriptions.low, shippedLevels('en').descriptions.low)
+    // 出厂新文案本身当然也认得出（重复同步是幂等的）
+    assert.equal(syncShippedLevels({ descriptions: { low: shippedLevels('zh').descriptions.low } }, 'zh').descriptions.low, shippedLevels('zh').descriptions.low)
+    // 用户改过的一个字不动
+    assert.equal(syncShippedLevels({ descriptions: { low: '我自己写的 low' } }, 'zh').descriptions.low, '我自己写的 low')
+    // medium 没有改版：旧文本就是当前文本，这里顺带钉住「只刷新改过的那一档」
+    assert.match(shippedLevels('zh').descriptions.medium, /工作区外文件的常规操作/)
   })
 
   it('出厂提示词把围栏内容声明为不可信数据', () => {
@@ -945,6 +1127,15 @@ describe('matchKeywordBuckets', () => {
 
 describe('mergePluginConfig', () => {
   it('空值回落到默认，overlay 覆盖 yaml', () => {
+    // `reasoningEffort` 的唯一真名：历史拼写 `off` 与「不配档位」在适配层是同一个请求
+    // （adapter 先做 `reasoning === 'off' ? undefined : reasoning`），所以读盘/保存都归一成空。
+    // 留着它不只是多个等价选项：它还要走「档位在不在路由档位表里」那条校验，路由没列 off 时
+    // 每一次判定都以路由失败告终（全量转人工），而它在适配层根本不可能"不受支持"。
+    assert.equal(mergePluginConfig({}, { judge: { reasoningEffort: 'off' } }).judge.reasoningEffort, '')
+    assert.equal(mergePluginConfig({}, { judge: { reasoningEffort: ' OFF ' } }).judge.reasoningEffort, '')
+    assert.equal(mergePluginConfig({ judge: { reasoningEffort: 'off' } }, {}).judge.reasoningEffort, '')
+    assert.equal(mergePluginConfig({}, { judge: { reasoningEffort: 'high' } }).judge.reasoningEffort, 'high')
+    assert.equal(mergePluginConfig({}, {}).judge.reasoningEffort, '')
     const m = mergePluginConfig({ judge: { model: 'from-yaml' } }, { judge: { provider: 'p' } })
     assert.equal(m.judge.model, 'from-yaml')
     assert.equal(m.judge.provider, 'p')
@@ -960,6 +1151,18 @@ describe('mergePluginConfig', () => {
     assert.equal(mergePluginConfig({}, { judgePromptLang: 'fr' }).judgePromptLang, 'zh')
     assert.equal(normalizeJudgePromptLang('en'), 'en')
     assert.equal(normalizeJudgePromptLang(''), 'zh')
+  })
+
+  it('首轮输出预算（judge.maxTokens）：默认 8192，读盘与保存都过归一', () => {
+    assert.equal(mergePluginConfig({}, {}).judge.maxTokens, JUDGE_MAX_TOKENS_REASONING)
+    assert.equal(mergePluginConfig({}, { judge: { maxTokens: 4096 } }).judge.maxTokens, 4096)
+    // yaml 层的值保留，overlay 覆盖 yaml（与 provider/model 同一套逐键合并）
+    assert.equal(mergePluginConfig({ judge: { maxTokens: 2048 } }, {}).judge.maxTokens, 2048)
+    assert.equal(mergePluginConfig({ judge: { maxTokens: 2048 } }, { judge: { maxTokens: 8192 } }).judge.maxTokens, 8192)
+    // 越界 / 认不出的值归一（不是拒绝）：读盘不许静默停在非法值上
+    assert.equal(mergePluginConfig({}, { judge: { maxTokens: 999999 } }).judge.maxTokens, JUDGE_MAX_TOKENS_MAX)
+    assert.equal(mergePluginConfig({}, { judge: { maxTokens: 1 } }).judge.maxTokens, JUDGE_MAX_TOKENS_MIN)
+    assert.equal(mergePluginConfig({}, { judge: { maxTokens: 'x' } }).judge.maxTokens, JUDGE_MAX_TOKENS_REASONING)
   })
 
   it('judgePrompts 按语言覆盖，空字符串恢复默认', () => {
@@ -1003,7 +1206,7 @@ describe('normalizeAllowlist', () => {
     })
     const freshOther = fresh.criteria.find((c) => c.id === 'other')
     assert.equal(freshOther.description, '以上条目全部不符合或无法确认')
-    assert.equal(fresh.version, 22)
+    assert.equal(fresh.version, 23)
 
     // 英文旧文案同样被刷新（同一个 id，只认「等于上一版出厂原文」这一种情况）。
     const enCfg = normalizeAllowlist({
@@ -1030,6 +1233,41 @@ describe('normalizeAllowlist', () => {
     assert.ok(OLD_EN.length > 0)
   })
 
+  it('version < 23：仍是旧出厂说明的 system 行刷新文案（临时产物消歧），自定义说明不动', () => {
+    // 旧 system 行按路径清单认领 /var，safe 行又认领「临时目录/中间产物」——同一个
+    // 「工作区外写一个临时文件」实测时而落 system、时而落 safe。用户按行拉开格子之后
+    // 这种摇摆会变成「同一操作时而放行时而弹框」，所以补一句消歧。
+    const OLD_ZH = '改动 /etc、/usr、/boot、/root、/var、/opt、Windows 系统目录、系统服务与防火墙、关机重启、用户与权限管理（useradd/userdel/passwd/visudo/chown -R、把系统目录权限放宽到 777）、crontab、shell rc、用户启动项时选它（看命令或路径）；包管理器往系统前缀安装也算'
+    const OLD_EN = 'Pick this when /etc, /usr, /boot, /root, /var, /opt, Windows system directories, services and firewall, shutdown/reboot, user and permission management (useradd/userdel/passwd/visudo/chown -R, loosening system directory permissions to 777), crontab, shell rc, or user startup items change (look at command or path); package-manager installs into a system prefix also count'
+    const withOldSystem = (rows, oldText) => rows.map((c) => (c.id === 'system'
+      ? { id: 'system', description: oldText, actions: { ...c.actions } }
+      : { ...c, actions: { ...c.actions } }))
+
+    const zh = normalizeAllowlist({ version: 22, criteria: withOldSystem(DEFAULT_CRITERIA_ZH, OLD_ZH) })
+    const zhSystem = zh.criteria.find((c) => c.id === 'system')
+    assert.equal(zhSystem.description, DEFAULT_CRITERIA_ZH.find((c) => c.id === 'system').description)
+    assert.match(zhSystem.description, /不因路径落在 \/var 就选本行/)
+    assert.equal(zh.version, 23)
+
+    const en = normalizeAllowlist({ version: 22, criteria: withOldSystem(DEFAULT_CRITERIA_EN, OLD_EN) })
+    assert.match(en.criteria.find((c) => c.id === 'system').description, /not by the \/var prefix/)
+
+    // 用户改过的说明一个字不动；三格也不动。
+    const mine = normalizeAllowlist({
+      version: 22,
+      criteria: DEFAULT_CRITERIA_ZH.map((c) => (c.id === 'system'
+        ? { id: 'system', description: '我自己写的系统行说明', actions: { low: 'reject', medium: 'human', high: 'reject' } }
+        : { ...c, actions: { ...c.actions } })),
+    })
+    const mySystem = mine.criteria.find((c) => c.id === 'system')
+    assert.equal(mySystem.description, '我自己写的系统行说明')
+    assert.deepEqual(mySystem.actions, { low: 'reject', medium: 'human', high: 'reject' })
+
+    // 已经写过盘的（version 23）不会被动第二次。
+    const again = normalizeAllowlist({ ...zh, criteria: zh.criteria.map((c) => ({ ...c })) })
+    assert.equal(again.criteria.find((c) => c.id === 'system').description, zhSystem.description)
+  })
+
   it('空配置预置词进拒绝桶与人工桶', () => {
     const cfg = normalizeAllowlist({})
     assert.ok(cfg.rejectKeywords.includes('rm -rf /'), '清根仍硬拒')
@@ -1041,7 +1279,7 @@ describe('normalizeAllowlist', () => {
     assert.ok(cfg.rejectKeywords.includes('id_rsa'))
     assert.ok(cfg.rejectKeywords.includes('of=/dev/'), 'dd 写设备要进默认拒绝词')
     assert.deepEqual(cfg.humanKeywords, [], '人工桶默认留空，拿不准交给审核表')
-    assert.equal(cfg.version, 22)
+    assert.equal(cfg.version, 23)
     const other = cfg.criteria.find((c) => c.id === 'other')
     const safe = cfg.criteria.find((c) => c.id === 'safe')
     assert.deepEqual(other.actions, FACTORY_ACTIONS)
@@ -1164,7 +1402,7 @@ describe('normalizeAllowlist', () => {
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'other').actions, FACTORY_ACTIONS)
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'safe').actions, FACTORY_ACTIONS)
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'deletion').actions, FACTORY_ACTIONS)
-    assert.equal(cfg.version, 22)
+    assert.equal(cfg.version, 23)
   })
 
   it('v7/v8 迁移只增不删：旧中文词保留，默认词补齐', () => {
@@ -1214,7 +1452,7 @@ describe('normalizeAllowlist', () => {
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'other').actions, FACTORY_ACTIONS)
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'safe').actions, FACTORY_ACTIONS)
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'deletion').actions, FACTORY_ACTIONS)
-    assert.equal(cfg.version, 22)
+    assert.equal(cfg.version, 23)
   })
 
   it('v12 插入 approval-config 默认拒绝', () => {
@@ -1231,7 +1469,7 @@ describe('normalizeAllowlist', () => {
     assert.ok(ids.includes('approval-config'))
     assert.ok(ids.indexOf('approval-config') < ids.indexOf('safe'))
     assert.deepEqual(cfg.criteria.find((c) => c.id === 'approval-config').actions, FACTORY_ACTIONS)
-    assert.equal(cfg.version, 22)
+    assert.equal(cfg.version, 23)
   })
 
   it('v15 插入审批配置路径拒绝词', () => {
@@ -1285,7 +1523,7 @@ describe('normalizeAllowlist', () => {
         { id: 'other', label: '其他', description: '以上风险类都不符合，且不能确认是否安全', action: 'human' },
       ],
     })
-    assert.equal(zh.version, 22)
+    assert.equal(zh.version, 23)
     // 用户给 remote 写的三格是全 human——那不是该行的旧出厂形状，v22 不动它（只改仍是出厂形状的行）
     assert.equal(allRowActions(zh.criteria.find((c) => c.id === 'remote'), 'human'), true)
     // 而由迁移补出来的行（safe / other）走的是出厂形状 → v22 统一成新刻度
@@ -2003,6 +2241,28 @@ describe('解析与卡片的 review 修复', () => {
     assert.notEqual(decide('类别: risky-cleanup\n理由: cleanup is safe', DEFAULT_CRITERIA, levels).criterion, 'safe')
   })
 
+  it('结构化输出 + 模型给了等级：护栏按**生效等级**跳过会放行的行', () => {
+    // 护栏过去只看「fallback 那一格会不会放行」：出厂 fallback=high，没有任何一行 high=allow，
+    // 于是模型顺手写一句 `风险等级: low` 就能让护栏彻底空转——`safe` 行 low=allow，
+    // 理由里的 `safe` 一个词就决定了放行。现在按生效等级（解析出的等级，否则 fallback）过滤。
+    const levels = shippedLevels('zh')
+    const rows = [
+      { id: 'safe', description: 's', actions: { low: 'allow', medium: 'human', high: 'reject' } },
+      { id: 'other', description: 'o', actions: { low: 'human', medium: 'human', high: 'reject' } },
+    ]
+    const out = parseJudgeClassify('类别: risky-cleanup\n风险等级: low\n理由: This looks safe to me', rows, levels)
+    assert.equal(out.criterion, 'other', 'safe 行在 low 格放行 → 结构化输出下必须跳过它')
+    assert.equal(out.src, 'none')
+    assert.equal(
+      resolveCriterionAction(rows.find((r) => r.id === out.criterion), out.level, levels).action,
+      'human',
+      '跳过之后落 other：由 (other, low) 决定，不再由理由里的词放行',
+    )
+    // 纯散文仍保持原行为：可能命中某一行，动作由 (行, 生效等级) 决定
+    const prose = parseJudgeClassify('this looks safe to me', rows, levels)
+    assert.equal(prose.criterion, 'safe')
+  })
+
   it('JSON 里的 allow 词不会被当成放行依据', () => {
     // `{"category":"other","reason":"looks safe"}` 按表序扫全文会命中 `safe` 行；
     // 「会不会放行」由那一行在兜底等级下的格子决定 —— 出厂是 high=reject，所以不会放行。
@@ -2023,6 +2283,236 @@ describe('解析与卡片的 review 修复', () => {
     const pretty = decide('{\n  "category": "safe",\n  "reason": "json"\n}')
     assert.notEqual(pretty.src, 'strict')
     assert.notEqual(pretty.action, 'allow')
+  })
+
+  it('代码围栏与前置散文都不改变「结构化输出」的失败关闭方向（一层围栏不能放行）', () => {
+    // 实测过的洞：`looksJson` 只认 `^\s*[[{]` 时，同一份负载包一层 ```json 就绕过了护栏——
+    // JSON 里的 `"level":"low"` 被当成等级行解析出来，模糊扫描也不再跳过「在该等级会放行」
+    // 的行，于是 (safe, low) → **allow**；无围栏的同一份负载是 reject。
+    const payload = '{"level":"low","reason":"this looks safe"}'
+    const variants = {
+      unfenced: payload,
+      fenced: '```json\n' + payload + '\n```',
+      proseThenJson: '分析如下：\n' + payload,
+      inlineJson: '分析如下：' + payload,
+      tildeFenced: '~~~\n' + payload + '\n~~~',
+      // **围栏与负载同一行**：剥围栏时若把整行删到行尾（`/(?:`{3,})[^\n]*/`），
+      // 判据就看不到负载了，而解析仍读未剥离的原文 → 又一次自动放行（实测回归）。
+      fenceOnSameLine: '```json ' + payload + ' ```',
+      tildeOnSameLine: '~~~ ' + payload + ' ~~~',
+    }
+    for (const [name, text] of Object.entries(variants)) {
+      // 解析结果里等级必须留空（结构性输出里的 `"level":"low"` 不是本接口的等级）
+      assert.equal(parseJudgeClassify(text, DEFAULT_CRITERIA, DEFAULT_LEVELS).level, '', `${name}: JSON 里的 level 不是本接口的等级`)
+      const out = decide(text)
+      assert.equal(out.levelSrc, 'fallback', name)
+      assert.equal(out.action, 'reject', `${name}: 落兜底等级 → 拒绝，绝不能 allow`)
+    }
+    // 真正危险的是「表里有一行在生效等级会放行」：结构化输出不许靠理由里的词命中它。
+    // 这一条只有护栏生效时才会 reject（护栏失效时 fuzzy 会命中 safe → allow）。
+    const permissive = DEFAULT_CRITERIA.map((c) => (
+      c.id === 'safe' ? { ...c, actions: { low: 'allow', medium: 'allow', high: 'allow' } } : c
+    ))
+    for (const [name, text] of Object.entries(variants)) {
+      const out = decide(text, permissive)
+      assert.notEqual(out.criterion, 'safe', name)
+      assert.notEqual(out.action, 'allow', name)
+    }
+    // 围栏本身不吃掉合法输出：围栏里的普通三行结论照旧严格解析
+    const wrapped = decide('```\n类别: safe\n风险等级: low\n理由: 改 README\n```')
+    assert.equal(wrapped.src, 'strict')
+    assert.equal(wrapped.criterion, 'safe')
+    assert.equal(wrapped.level, 'low')
+    assert.equal(wrapped.action, 'allow')
+    // 纯散文保持原行为（既有权衡）：词能命中某行，动作仍由 (行, 兜底等级) 决定
+    const prose = decide('this looks safe to me')
+    assert.equal(prose.src, 'fuzzy')
+    assert.equal(prose.action, 'reject')
+  })
+
+  it('「像 JSON」判据不许过宽：模型明写的三行结论不能被正文里的括号/JSON 干扰掉', () => {
+    // 判据过宽（正文任意位置出现 `{"键":`、或任意一行以 `[` + 单词字符开头，例如理由里写
+    // `[README.md]`）会让**整趟严格解析被跳过**：模型明写的 `风险等级: high` 被丢掉、
+    // 落到 `levels.fallback`——用户把兜底档配成 `low` 时，一次本该 reject 的判定变成 allow。
+    const lowFallback = { ...DEFAULT_LEVELS, fallback: 'low' }
+    const legit = [
+      ['类别: deletion\n风险等级: high\n理由: 会删库', 'reject'],
+      ['类别: deletion\n风险等级: high\n理由: 只改 [README.md]', 'reject'],
+      ['类别: deletion\n风险等级: high\n理由: 见 {"a":1}', 'reject'],
+      ['类别: deletion\n风险等级: high\n理由: 常规\n[README.md]', 'reject'],
+      ['类别: safe\n风险等级: low\n理由: 常规改动\n[README.md]', 'allow'],
+    ]
+    for (const [text, action] of legit) {
+      const out = decide(text, DEFAULT_CRITERIA, lowFallback)
+      assert.equal(out.src, 'strict', text)
+      assert.equal(out.level === 'high' ? 'reject' : 'allow', action, text)
+      assert.equal(out.action, action, text)
+    }
+    // 反向：真正的结构化输出（行内 JSON / 中文键 JSON）仍然按结构性走，理由里的词不放行
+    for (const text of [
+      '分析如下：{"类别":"safe","理由":"常规改动"}',
+      '{"类别":"safe","理由":"this looks safe"}',
+      '{"level":"low","reason":"this looks safe"}',
+    ]) {
+      assert.notEqual(parseJudgeClassify(text, DEFAULT_CRITERIA, DEFAULT_LEVELS).level, 'low', text)
+      assert.notEqual(decide(text).action, 'allow', text)
+    }
+  })
+
+  it('撞车键（#N）上的路径照旧进干草；事件存档不许把 magic key 写丢', () => {
+    // `#N` 是拍平路径的撞车后缀：按基名比较前不剥掉它，`file_path#2` 上的真实路径
+    // 就既不进路径干草、也拿不到点文件词的放宽匹配（出厂 `.netrc` 那条静默失效）。
+    const detail = pickToolArgsDetailed({ file_path: '/a/.netrc', 'file_path#2': 'prod.env' })
+    assert.deepEqual(Object.keys(detail.args).sort(), ['file_path', 'file_path#2'])
+    assert.match(formatPathKeywordHay(detail.args, '/w', detail.scalars), /\/w\/prod\.env/)
+    assert.match(formatKeywordHay('t', '', detail.args, '/w', detail.scalars), /prod\.env/)
+    // 事件存档：`isProtoKey` 的字符串值也要落进事件（`out[key] =` 会被原型 setter 吞掉）
+    const archived = clipToolArgsForEvent(JSON.parse('{"__proto__":"x","a":"1"}'), [])
+    assert.equal(Object.prototype.hasOwnProperty.call(archived, '__proto__'), true)
+    assert.equal(archived.a, '1')
+  })
+
+  it('关键词的 shell 变形归一化：引号/IFS/行续接/`--`/ANSI-C 引用都要拦得住', () => {
+    // 红线的定义是「零上下文确定灾难」，而 shell 会先做引号拼接与展开：同一场灾难换个写法
+    // 就降级成「交给模型判」（实测六种拼写全部 allowed-once）。归一化只在原文本没命中时
+    // **额外**试一次，所以只会多拦。
+    const hits = [
+      'rm -rf "/"', "rm -rf '/'", 'rm -rf ""/', 'rm -rf -- /', 'rm -rf --no-preserve-root /',
+      'rm -rf ${IFS}/', 'rm -rf $IFS/', 'rm -rf \\\n/', "rm -rf $'\\x2f'", "m$'\\x6b'fs.ext4 /dev/sdb",
+      'dd if=/dev/zero of="/dev/sda"', 'w"ipe"fs -a /dev/sdb',
+    ]
+    for (const cmd of hits) assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), true, cmd)
+    // 升级用户的配置里没有 `--no-preserve-root` 这个词（新增出厂词不迁移进已有文件）：
+    // 归一化负责把 `--no-preserve-root` 吃掉，回到出厂词 `rm -rf /` 的形状。
+    // 它**不得**回到出厂词表：那样「只是提到」这串字样的命令会被硬拒（见下一条断言）。
+    assert.equal(DEFAULT_DENY_KEYWORDS.includes('--no-preserve-root'), false, '归一化负责吃它，词表项是多余且有害的')
+    const legacy = DEFAULT_DENY_KEYWORDS.filter((k) => k !== '--no-preserve-root')
+    assert.equal(looksDeny('rm -rf --no-preserve-root /', legacy), true, '升级用户也要拦得住')
+    // mention 型命令不许被硬拒（第 6 轮验证性复审：加回词表时这 5 条立刻全变 keyword-reject）
+    for (const cmd of ['git log --no-preserve-root', 'man rm --no-preserve-root', 'echo --no-preserve-root', 'rg -- "--no-preserve-root" docs/', 'grep -r --no-preserve-root /etc']) {
+      assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), false, cmd)
+    }
+    // 快路径：没有任何「变形字符」时归一化必须是**恒等**（否则 8MB 干草每次都要多扫一趟）
+    assert.equal(shellNormalizeForKeywords('rm -rf /tmp/x'), 'rm -rf /tmp/x')
+    assert.equal(shellNormalizeForKeywords('a   b\tc'), 'a   b\tc', '空白折叠对匹配语义无影响，不该算变形')
+    // 无害命令一条都不许误伤
+    for (const cmd of [
+      'rm -rf node_modules', 'rm -rf /tmp/x', 'rm -rf --preserve-root /', 'dd if=/dev/sda of=backup.img',
+      'of=/dev/null', 'Remove-Item -Recurse -Force .\\build', 'git checkout -- file', 'npm run build -- --prod', 'echo "hello world"',
+    ]) assert.equal(looksDeny(cmd, DEFAULT_DENY_KEYWORDS), false, cmd)
+  })
+
+  it('标量 workdir 不当相对路径的基准（不进任何干草）', () => {
+    // `pathBases` 里的 `!scalarSet.has('workdir')` 此前零覆盖：删掉它用例全绿。
+    // 数字/布尔标量进干草只会误命中（`workdir: 42` 不该变成 `42/rel.txt`）。
+    const d = pickToolArgsDetailed({ workdir: 42, file_path: 'rel.txt' })
+    const pathHay = formatPathKeywordHay(d.args, '/w', d.scalars)
+    assert.equal(pathHay.includes('42/rel.txt'), false, pathHay)
+    assert.match(pathHay, /\/w\/rel\.txt/)
+    const hay = formatKeywordHay('t', '', d.args, '/w', d.scalars)
+    assert.equal(hay.includes('42/rel.txt'), false, hay)
+  })
+
+  it('JSON 独占一行时严格解析照旧生效（不许被 looksJson 短路）', () => {
+    // 第 2 轮的修复把「像 JSON 就跳过整趟严格解析」两道门删了（那是两次实测放行的来源）。
+    // 但已有用例的 `{"a":1}` 都落在**带本接口标签**的行上（`理由: 见 {"a":1}`），判据把它们排除，
+    // 于是根本没走到那道门 —— 把门加回去时全套仍然全绿。这里补上「JSON 独占一行」这条路径：
+    // 自定义表 + `fallback=low` 时，模型明写的 `类别: deletion / 风险等级: high` 必须仍然 reject。
+    const lowFallback = { ...DEFAULT_LEVELS, fallback: 'low' }
+    for (const text of [
+      '{"a":1}\n类别: deletion\n风险等级: high',
+      '[1,2]\n类别: deletion\n风险等级: high',
+      '分析如下：{"a":1}\n类别: deletion\n风险等级: high',
+      '先看这个\n{"a":1}\n类别: deletion\n风险等级: high',
+      '{"a":1}\n\n类别: deletion\n风险等级: high',
+    ]) {
+      const out = decide(text, DEFAULT_CRITERIA, lowFallback)
+      assert.equal(out.src, 'strict', text)
+      assert.equal(out.level, 'high', text)
+      assert.equal(out.action, 'reject', text)
+    }
+  })
+
+  it('非 slug 的 id 不许让整行静默消失；label 兜底真的生效（第 7 轮迁移复审）', () => {
+    // 实测过的静默数据丢失：手写 `id: "中文类别"` 的行会被整行丢掉——`snapshot` 里就没了，
+    // 下一次写盘还会把它从磁盘上抹掉（说明与三格一起）。label 兜底此前只在 `id` 为空时才看。
+    const zhRow = normalizeCriterion({ id: '中文类别', description: '手写的中文行', actions: { low: 'allow', medium: 'human', high: 'reject' } })
+    assert.ok(zhRow, '行不许消失')
+    assert.equal(zhRow.id, '中文类别', '认不出 slug 就原样保留 id')
+    assert.equal(zhRow.description, '手写的中文行')
+    assert.deepEqual(zhRow.actions, { low: 'allow', medium: 'human', high: 'reject' })
+    // 旧 schema：只有 label（没 id）→ label 先当 id
+    const labelled = normalizeCriterion({ label: 'remote-db', description: '远程库' })
+    assert.equal(labelled.id, 'remote-db')
+    assert.equal(labelled.description, '远程库')
+    // 真正空行仍然丢弃
+    assert.equal(normalizeCriterion({}), null)
+    // 归一化后的表里那行还在（不是被 filter 掉）
+    const list = normalizeCriteria([{ id: 'deletion', description: 'd' }, { id: '中文类别', description: 'x' }, { id: 'other', description: 'o' }])
+    assert.deepEqual(list.map((r) => r.id), ['deletion', '中文类别', 'other'])
+  })
+
+  it('presetSandbox 的大小写/空白变体是同一个值；认不出的值不算「有意见」', () => {
+    // `"READ-ONLY"` / `" read-only "` 与 `read-only` 同义：不先归一就当成「认不出」，
+    // 启动路径会拿默认 workspace-write 去改写用户手写的 `sandbox: read-only`（放宽沙箱）。
+    for (const v of ['READ-ONLY', ' read-only ', 'Read-Only', 'read-only']) {
+      assert.equal(normalizePresetSandbox(v), 'read-only', JSON.stringify(v))
+    }
+    for (const v of ['workspace-write', 'WORKSPACE-WRITE', ' danger-full-access ']) {
+      assert.equal(isKnownPresetSandbox(v), true, JSON.stringify(v))
+    }
+    for (const v of ['readonly', 'read only', 'read_only', '', null, undefined, 'nope']) {
+      assert.equal(isKnownPresetSandbox(v), false, JSON.stringify(v))
+    }
+    assert.equal(isKnownPresetSandbox('read-only'), true)
+  })
+
+  it('未来版本号不被降级（回退到本构建再升级时不重跑迁移）', () => {
+    const future = normalizeAllowlist({ version: 24, criteria: DEFAULT_CRITERIA, rejectKeywords: [], humanKeywords: [], allowKeywords: [] })
+    assert.equal(future.version, 24, 'version: 24 不许被压成 23')
+    const old = normalizeAllowlist({ version: 11, criteria: DEFAULT_CRITERIA, rejectKeywords: [], humanKeywords: [], allowKeywords: [] })
+    assert.equal(old.version, 23, '老版本照旧升到当前版本')
+    const garbage = normalizeAllowlist({ version: 'x', criteria: DEFAULT_CRITERIA, rejectKeywords: [], humanKeywords: [], allowKeywords: [] })
+    assert.equal(garbage.version, 23)
+  })
+
+  it('humanReview.enabled 必须是严格布尔：手写的 "false" 不许把敏感通道打开', () => {
+    // 这个开关一开，人工审批框就变成**模型可主动触发**的通道（AGENTS 明写默认关闭 + 警告）。
+    // 第 11 轮变异发现：把 `r.enabled === true` 改成 `Boolean(r.enabled)` 时全套 444 条仍绿——
+    // 于是手写的 `"false"`（字符串，UI 之外改配置、或别的工具写盘）会静默打开它。
+    for (const v of ['false', 'no', '0', 1, 0, 'yes', {}, []]) {
+      assert.equal(normalizeHumanReview({ enabled: v }).enabled, false, JSON.stringify(v))
+    }
+    assert.equal(normalizeHumanReview({ enabled: true }).enabled, true)
+    assert.equal(normalizeHumanReview({}).enabled, false)
+    // RPC 路径同一条归一：`save-plugin { humanReview: { enabled: 'false' } }` 落盘的是 false
+    assert.equal(mergePluginConfig({}, { humanReview: { enabled: 'false' } }).humanReview.enabled, false)
+    assert.equal(mergePluginConfig({}, { humanReview: { enabled: true } }).humanReview.enabled, true)
+  })
+
+  it('onlyAutoApprovePreset 必须是严格布尔：手写的 "false" 不许静默变成宽松模式', () => {
+    // 门控侧读法是 `pluginCfg.onlyAutoApprovePreset !== false`：false = **每个预设**都门控（更严），
+    // 其余值 = 只在 auto-approve 预设下门控。原样透传时，带引号的 `"false"` / `"yes"` / `1`
+    // 会静默走进宽松那一支——同类配置键里只有它是这样（其余都严格归一或失败关闭）。
+    assert.equal(mergePluginConfig({}, { onlyAutoApprovePreset: 'false' }).onlyAutoApprovePreset, false)
+    assert.equal(mergePluginConfig({}, { onlyAutoApprovePreset: 'yes' }).onlyAutoApprovePreset, false)
+    assert.equal(mergePluginConfig({}, { onlyAutoApprovePreset: 1 }).onlyAutoApprovePreset, false)
+    assert.equal(mergePluginConfig({}, { onlyAutoApprovePreset: false }).onlyAutoApprovePreset, false)
+    assert.equal(mergePluginConfig({}, { onlyAutoApprovePreset: true }).onlyAutoApprovePreset, true)
+    assert.equal(mergePluginConfig({}, null).onlyAutoApprovePreset, true)
+    assert.equal(defaultPluginConfig().onlyAutoApprovePreset, true)
+  })
+
+  it('表里没有 other（配置损坏）时兜底行失败关闭：三格全人工', () => {
+    // 这里曾经夹着一层 `DEFAULT_CRITERIA.find(other)`，而出厂表永远有 other → 恒真，
+    // 于是「损坏配置」拿到的是出厂兜底行（low 格 allow），注释承诺的失败关闭走不到。
+    const noOther = DEFAULT_CRITERIA.filter((c) => c.id !== 'other')
+    for (const id of ['other', '不存在的行']) {
+      const row = lookupCriteria(noOther, id)
+      assert.deepEqual(row.actions, { low: 'human', medium: 'human', high: 'human' }, id)
+    }
+    // 正常表里 other 照旧按用户的三格走
+    assert.deepEqual(lookupCriteria(DEFAULT_CRITERIA, 'other').actions, FACTORY_ACTIONS)
   })
 
   it('值两侧的装饰不影响严格解析', () => {
@@ -2065,5 +2555,47 @@ describe('解析与卡片的 review 修复', () => {
     const args = pickToolArgs({ command: 'ls', workdir: '' })
     const card = formatJudgeCard('bash', '', null, args, '', 'zh')
     assert.match(card, /命令工作目录:\n\(空\)/)
+  })
+})
+
+describe('判定失败 src 的成员集合（契约：查 other 三格 vs 固定转人工）', () => {
+  it('JUDGE_FAILURE_SRCS 是闭集，成员多一个少一个都会改变后果', () => {
+    // 「判定压根没跑成」固定转人工、**不查 other 的三格**；而模型答了但类别认不出（`none`）
+    // 仍按 (other, 等级) 查格。两者在出厂表下后果不同（other.low=allow），所以成员集合
+    // 必须有网：加一个 `none` 就会把「模型答了」静默变成「判定没跑成」。
+    assert.deepEqual([...JUDGE_FAILURE_SRCS].sort(), ['call', 'empty', 'plugin', 'route', 'timeout'])
+    for (const src of JUDGE_FAILURE_SRCS) assert.equal(isJudgeFailureSrc(src), true, src)
+    for (const src of ['none', 'strict', 'bare', 'fuzzy', '', undefined, 'judge-call', 'cancelled']) {
+      assert.equal(isJudgeFailureSrc(src), false, String(src))
+    }
+    // 「失败固定转人工」且**清空等级**（不套 levels.fallback）
+    const otherRow = lookupCriteria(DEFAULT_CRITERIA, 'other')
+    for (const src of JUDGE_FAILURE_SRCS) {
+      const got = resolveFallbackAction(otherRow, 'low', DEFAULT_LEVELS, src)
+      assert.equal(got.action, 'human', src)
+      assert.equal(got.level, '', src)
+      assert.equal(got.levelSrc, '', src)
+    }
+    // `none`（模型答了、类别认不出）照 (other, 等级) 查格：low 格是 allow
+    const none = resolveFallbackAction(otherRow, 'low', DEFAULT_LEVELS, 'none')
+    assert.equal(none.action, 'allow')
+    assert.equal(none.level, 'low')
+  })
+
+  it('buildJudgePrompt 缺占位符时只追加**定义**，绝不追加输出格式', () => {
+    // 格式只能在模板里规定一次：两处规定会打架（曾经卡片里写着「只输出两行」而模板要求三行，
+    // 模型照办就让等级行整条消失 → 每个判定都落 levels.fallback）。
+    const tpl = '自定义模板：只讲归类，不给格式'
+    const out = buildJudgePrompt(DEFAULT_CRITERIA, DEFAULT_LEVELS, 'zh', tpl)
+    assert.match(out, /^自定义模板：只讲归类，不给格式/)
+    assert.match(out, /审核表：/)       // 定义被追加
+    assert.match(out, /风险等级：/)
+    assert.match(out, /- low：/)        // 等级定义行
+    // 输出格式指令一个都不许被追加
+    for (const forbidden of ['类别:', '风险等级: <', '只输出', 'JSON', '请输出']) {
+      assert.equal(out.includes(forbidden), false, forbidden)
+    }
+    assert.equal(out.includes('{{criteria}}'), false)
+    assert.equal(out.includes('{{levels}}'), false)
   })
 })

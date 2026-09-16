@@ -303,6 +303,8 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     // （空字符串字段会被 `clipJudgeForEvent` 的 put() 整条丢掉，所以这里判 falsy）
     assert.ok(!ev.judge.level, '判定失败不该有等级')
     assert.ok(!ev.judge.levelSrc, '判定失败不该有等级来源')
+    // 判定没跑成必须在审计里留一行（否则现场只剩「怎么又转人工了」）
+    assert.match(readFileSync(pathsFor().audit, 'utf8'), /FAILED\s+judge route: err\.judgeUnconfigured/)
   })
 
   it('长命令不再被切：9000 字符仍在预算内，关键词允许照旧生效', async () => {
@@ -346,6 +348,31 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     })
     assert.equal(outcome, 'rejected')
     assert.ok(events.some((e) => e.path === 'keyword-reject'))
+  })
+
+  it('清根红线的 shell 拼写端到端硬拒；只是**提到** `--no-preserve-root` 的命令不许被硬拒', async () => {
+    // 词表里**没有** `--no-preserve-root`（它由 `shellNormalizeForKeywords` 吃掉，对所有用户
+    // 含升级都生效）。四种摆放顺序 + ANSI-C/IFS/引号变形都必须端到端 rejected 且 path=keyword-reject
+    // ——否则同一场灾难换个写法就降级成「交给模型判」，判错就是自动删根。
+    const spellings = [
+      'rm -rf --no-preserve-root /',
+      'rm -rf / --no-preserve-root',
+      'sudo rm -rf --no-preserve-root /',
+      'rm --no-preserve-root -rf /',
+      "rm -rf $'\\x2f'",
+      'rm -rf ${IFS}/',
+      'rm -rf "/"',
+    ]
+    for (const command of spellings) {
+      const { outcome, events } = await runCase(ctx, { command, reason: 'escalate sandbox to danger-full-access: 拼写' })
+      assert.equal(outcome, 'rejected', command)
+      assert.ok(events.some((e) => e.path === 'keyword-reject'), command)
+    }
+    // 反向：只是**提到**这串字样的命令不是「零上下文就确定灾难」，不许被硬拒（交给审核模型判）。
+    for (const command of ['git log --no-preserve-root', 'man rm --no-preserve-root', 'echo --no-preserve-root']) {
+      const { events } = await runCase(ctx, { command, reason: 'escalate sandbox to danger-full-access: 提到字样' })
+      assert.equal(events.some((e) => e.path === 'keyword-reject'), false, command)
+    }
   })
 
   it('拒绝词但参数过长：仍按关键词拒绝', async () => {
@@ -439,6 +466,17 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     writeFileSync(allowlistPath, JSON.stringify({ ...base, ...patch }, null, 2) + '\n', 'utf8')
   }
 
+  /**
+   * 从 fixture 里**删掉**这些键。
+   * 契约要求归一化时 `delete` 的历史键（`missingPayloadAction` / `denyKeywords`）不该在
+   * 「恢复现场」时又被写回去——那会在后续用例里留下一份与文档矛盾的 fixture。
+   */
+  function dropAllowlistKeys(...keys) {
+    const base = JSON.parse(readFileSync(allowlistPath, 'utf8'))
+    for (const k of keys) delete base[k]
+    writeFileSync(allowlistPath, JSON.stringify(base, null, 2) + '\n', 'utf8')
+  }
+
   /** 把某行的三格换成指定值，其余行不动。 */
   function withRowActions(id, actions) {
     return DEFAULT_CRITERIA_ZH.map((c) => (c.id === id ? { ...c, actions } : c))
@@ -487,16 +525,54 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     assert.equal(calls.length, 1, '认不出不重试')
   })
 
-  it('路由会推理时，档位是 off 也按 1024 给预算', async () => {
+  it('历史拼写的 off 归一成「模型默认」：不发档位、不撞档位校验，但预算照给（默认 8192）', async () => {
+    // `off` 与「不配档位」在适配层是同一个请求（adapter 先删 off），插件算预算也一样。
+    // 但它过去会走「档位必须在路由档位表里」那条校验：**路由没把 off 列进档位表时，
+    // 每一次判定都会以路由失败告终**（src=route → 固定转人工），而「模型默认」没事。
+    // 现在读盘/保存都在 mergePluginConfig 里归一，这条用例盯住归一后的可观察行为。
     const calls = []
-    const { outcome } = await withJudge('类别: safe\n风险等级: low\n理由: 只读诊断', () => runCase(ctx, {
+    const { outcome, events } = await withJudge('类别: safe\n风险等级: low\n理由: 只读诊断', () => runCase(ctx, {
       command: 'echo PIPELINE-JUDGE-BUDGET',
       reason: 'escalate sandbox to danger-full-access: 预算按路由能力给',
-    }), { efforts: ['off', 'high', 'max'], reasoningEffort: 'off', calls })
+    }), { efforts: ['high', 'max'], reasoningEffort: 'off', calls })
+    assert.equal(outcome, 'allowed-once', 'off 不许变成路由失败（那样每次都转人工）')
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].maxTokens, 8192, '路由会推理就给默认的 8192（与不配档位同一条分支）')
+    assert.equal(calls[0].reasoningEffort, undefined, '归一后压根不发档位')
+    const ev = events.find((e) => e.path === 'criteria-allow')
+    assert.equal((ev.judge || {}).effort, undefined, '事件里也不该再有 effort=off')
+  })
+
+  it('真的选了档位时照旧发出去（归一只针对 off 这个拼写）', async () => {
+    const calls = []
+    const { outcome } = await withJudge('类别: safe\n风险等级: low\n理由: 只读诊断', () => runCase(ctx, {
+      command: 'echo PIPELINE-JUDGE-EFFORT',
+      reason: 'escalate sandbox to danger-full-access: 档位照发',
+    }), { efforts: ['high', 'max'], reasoningEffort: 'high', calls })
+    assert.equal(outcome, 'allowed-once')
+    assert.equal(calls[0].reasoningEffort, 'high')
+    assert.equal(calls[0].maxTokens, 8192)
+  })
+
+  it('设置页配的首轮输出预算真的送到模型（save-plugin → 重新加载 → 判定调用）', async () => {
+    // 配置项要么端到端生效，要么就是摆设：从 RPC 写配置一路看到模型请求参数。
+    // 注意 `withJudge` 自己会重写 config.json，所以保存必须发生在它里面（每次审批都会
+    // `reloadBoth()` 重新读盘——这里顺带验证保存的值真的落了盘）。
+    const calls = []
+    const { outcome } = await withJudge('类别: safe\n风险等级: low\n理由: 只读诊断', async () => {
+      const saved = await ctx._rpc('save-plugin', { judge: { maxTokens: 4096 } })
+      assert.equal(saved.ok, true)
+      assert.equal(saved.value.plugin.judge.maxTokens, 4096)
+      const cfgPath = join(process.env.DSH_HOME, 'auto-approve', 'config.json')
+      assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).judge.maxTokens, 4096, '保存的值必须落盘')
+      return runCase(ctx, {
+        command: 'echo PIPELINE-JUDGE-MAXTOKENS',
+        reason: 'escalate sandbox to danger-full-access: 首轮预算按设置给',
+      })
+    }, { efforts: ['off', 'high'], calls })
     assert.equal(outcome, 'allowed-once')
     assert.equal(calls.length, 1)
-    assert.equal(calls[0].maxTokens, 1024)
-    assert.equal(calls[0].reasoningEffort, 'off')
+    assert.equal(calls[0].maxTokens, 4096)
   })
 
   it('空输出换更大预算重试一次，仍空才转人工，并把现场写进事件', async () => {
@@ -511,9 +587,9 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
       reason: 'escalate sandbox to danger-full-access: 空输出重试',
     }), { efforts: ['off', 'high'], calls })
     assert.equal(outcome, 'web-human')
-    // `finish=max-tokens` = 推理把预算吃光了：翻倍救不回来（实测 1024 → 2048 两次都空），
-    // 重试直接给一大档。
-    assert.deepEqual(calls.map((c) => c.maxTokens), [1024, 8192])
+    // `finish=max-tokens` = 推理把预算吃光了：翻倍救不回来（实测首轮被吃光，重试给大档），
+    // 而且重试必须**严格大于首轮**——首轮默认已经是 8192，还返回固定的 8192 就不是升级。
+    assert.deepEqual(calls.map((c) => c.maxTokens), [8192, 16384])
     const failed = events.find((e) => e.path === 'criteria-human')
     assert.equal(failed.src, 'empty')
     assert.equal(failed.judge.errorCode, 'err.judgeEmpty')
@@ -524,9 +600,9 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     assert.equal(failed.judge.emptyRetry, true)
     assert.equal(failed.judge.finishKind, 'max-tokens')
     assert.equal(failed.judge.reasoningChars, '300')
-    assert.equal(failed.judge.maxTokens, '8192')
+    assert.equal(failed.judge.maxTokens, '16384')
     const auditText = readFileSync(pathsFor().audit, 'utf8')
-    assert.match(auditText, /HUMAN .*criteria=other level= src=empty \| err\.judgeEmpty 空输出 finish=max-tokens reasoningChars=300 maxTokens=8192 已换更大预算重试/)
+    assert.match(auditText, /HUMAN .*criteria=other level= src=empty \| err\.judgeEmpty 空输出 finish=max-tokens reasoningChars=300 maxTokens=16384 已换更大预算重试/)
     // 判定健康度：设置页要能说出「本次运行空输出几次」，否则现场只剩 audit.log
     const after = (await ctx._rpc('snapshot', {})).value.judgeHealth
     assert.equal(after.empty - before.empty, 1, '空输出失败要计数')
@@ -555,7 +631,7 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     }), { efforts: ['off', 'high'], calls })
     assert.equal(outcome, 'allowed-once')
     // `finish=stop` + 空正文不是预算问题（没有被截断），只翻倍。
-    assert.deepEqual(calls.map((c) => c.maxTokens), [1024, 2048])
+    assert.deepEqual(calls.map((c) => c.maxTokens), [8192, 16384])
     assert.ok(events.some((e) => e.path === 'criteria-allow'))
     const after = (await ctx._rpc('snapshot', {})).value.judgeHealth
     assert.equal(after.recovered - before.recovered, 1, '换预算救回的要记一笔（设置页用来说明重试在起作用）')
@@ -587,7 +663,7 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     assert.equal(badRun.value.code, 'err.judgeEmpty')
     assert.match(badRun.value.detail, /finish=max-tokens/)
     assert.equal(badRun.value.retried, true)
-    assert.deepEqual(emptyCalls.map((c) => c.maxTokens), [1024, 8192], '自检走与真实判定同一套预算阶梯')
+    assert.deepEqual(emptyCalls.map((c) => c.maxTokens), [8192, 16384], '自检走与真实判定同一套预算阶梯')
     assert.match(readFileSync(pathsFor().audit, 'utf8'), /SELFTEST FAILED p\/m err\.judgeEmpty/)
   })
 
@@ -598,6 +674,182 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     assert.equal(res.value.ran, false)
     assert.equal(res.value.ok, false)
     assert.match(res.value.code, /err\.judge/)
+    // 现场要落审计：设置页只显示当下这一次，时间线上还得能对照
+    assert.match(readFileSync(pathsFor().audit, 'utf8'), /SELFTEST FAILED route: err\.judge/)
+  })
+
+  it('setup / judge-catalog / judge-info 三个 RPC：成功与失败都要有确定的形状', async () => {
+    const patchPath = join(process.env.DSH_HOME, 'profiles', 'web', 'cordis.patch.yml')
+    // ① setup：按**配置里的** presetSandbox 写 patch（不是写死的模式），并回报预设状态
+    const saved = await ctx._rpc('save-plugin', { presetSandbox: 'read-only', judgePrompts: {} })
+    assert.equal(saved.ok, true)
+    try {
+      const setup = await ctx._rpc('setup', {})
+      assert.equal(setup.ok, true)
+      assert.equal(setup.value.ok, true)
+      assert.equal(setup.value.sandbox, 'read-only', 'setup 要用配置里的 sandbox，不是写死的模式')
+      assert.match(readFileSync(patchPath, 'utf8'), /sandbox:\s*read-only/)
+    } finally {
+      await ctx._rpc('save-plugin', { presetSandbox: 'workspace-write', judgePrompts: {} })
+    }
+
+    // ② judge-catalog：provider 透传 + 模型列表映射；失败时是 err.catalog 而不是空列表
+    const origList = ctx.llm.listModels
+    ctx.llm.listModels = async (provider) => {
+      if (provider === 'boom') throw new Error('catalog down')
+      return [{ id: 'm1', name: 'Model One' }, { id: 'm2' }]
+    }
+    try {
+      const cat = await ctx._rpc('judge-catalog', { provider: 'p2' })
+      assert.equal(cat.ok, true)
+      assert.equal(cat.value.provider, 'p2')
+      assert.deepEqual(cat.value.models, [{ id: 'm1', name: 'Model One' }, { id: 'm2', name: 'm2' }])
+      const bad = await ctx._rpc('judge-catalog', { provider: 'boom' })
+      assert.equal(bad.ok, false)
+      assert.equal(bad.error.code, 'err.catalog')
+      assert.match(bad.error.details.error, /catalog down/)
+    } finally {
+      ctx.llm.listModels = origList
+    }
+
+    // ③ judge-info：档位要带上 name（下拉显示用）；失败时是 err.info（设置页必须显示出来）
+    const origInfo = ctx.llm.resolveModelInfo
+    ctx.llm.resolveModelInfo = async (provider, model) => {
+      if (model === 'boom') throw new Error('info down')
+      return {
+        provider, id: model, name: 'N',
+        reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high' }], defaultEffort: 'low' },
+      }
+    }
+    try {
+      const info = await ctx._rpc('judge-info', { provider: 'p3', model: 'm3' })
+      assert.equal(info.ok, true)
+      assert.equal(info.value.provider, 'p3')
+      assert.equal(info.value.id, 'm3')
+      assert.deepEqual(info.value.efforts, [{ id: 'low', name: 'Low' }, { id: 'high', name: 'high' }])
+      assert.equal(info.value.defaultEffort, 'low')
+      const bad = await ctx._rpc('judge-info', { provider: 'p3', model: 'boom' })
+      assert.equal(bad.ok, false)
+      assert.equal(bad.error.code, 'err.info')
+      assert.match(bad.error.details.error, /info down/)
+    } finally {
+      ctx.llm.resolveModelInfo = origInfo
+    }
+  })
+
+  it('事件行带 callId；events 接口能按 callId 只取回这次调用（审批框的「自动判定」靠它关联）', async () => {
+    // 原生审批框的标题由请求方给、插件不能改 `req`，所以「机器为什么把你叫来」只能由
+    // 详情行补一行——而客户端手里只有 callId，事件行不带它就关联不起来。
+    const { events, callId, outcome } = await runCase(ctx, {
+      command: 'echo PIPELINE-CALLID-TOKEN',
+      reason: 'escalate sandbox to danger-full-access: callId 关联',
+      nextFn: async () => 'allowed-once',
+    })
+    assert.equal(outcome, 'allowed-once')
+    assert.ok(callId)
+    for (const ev of events) assert.equal(ev.callId, callId, '每一行都带这次调用的 id')
+    const pending = events.find((e) => e.kind === 'manual-pending')
+    assert.ok(pending, '应有等待人工那一条')
+    // 客户端就是这样取的：{ sessionId, callId } → 只回这一次调用的行
+    const res = await ctx._rpc('events', { sessionId: 'sess-pipeline', callId })
+    assert.equal(res.ok, true)
+    const rows = res.value.events
+    assert.ok(rows.length > 0)
+    for (const row of rows) assert.equal(row.callId, callId)
+    assert.ok(rows.some((row) => row.path === pending.path), '判决档位跟着回来（客户端据此拼「自动判定」）')
+    // 另一个 callId 不该混进来
+    const other = await ctx._rpc('events', { sessionId: 'sess-pipeline', callId: 'call-nope' })
+    assert.deepEqual(other.value.events, [])
+  })
+
+  it('事件显式落盘 outcome（客户端判「自动拒绝」的第一级判据）', async () => {
+    // 判据链是 outcome → denyReason → 后缀三级。全库过去只断言过**合成对象**：
+    // 把 `recordEvent` 里的 outcome 落盘删掉，346 项仍然全绿——而 truncated-payload /
+    // plugin-error 这类后缀判不出来的 path 就会把一次真拒绝渲染成绿色的「自动放行」。
+    const rejected = await runCase(ctx, { command: 'rm -rf /', reason: 'escalate sandbox to danger-full-access: outcome 契约' })
+    assert.equal(rejected.outcome, 'rejected')
+    const rejectRow = rejected.events[rejected.events.length - 1]
+    assert.equal(rejectRow.outcome, 'rejected', '拒绝事件必须写 outcome')
+    assert.equal(rejectRow.path, 'keyword-reject')
+    // 转人工那条**不该**有 outcome（它还不是结论；客户端靠这一点不渲染成「已拒绝」）
+    const pending = await runCase(ctx, {
+      command: 'echo 待人工',
+      reason: 'escalate sandbox to danger-full-access: outcome 契约',
+      nextFn: async () => 'allowed-once',
+    })
+    const pendingRow = pending.events.find((e) => e.kind === 'manual-pending')
+    assert.ok(pendingRow)
+    assert.equal(pendingRow.outcome, undefined, '等待人工不是结论，不许写 outcome')
+  })
+
+  it('判定路径撞送审预算：走 truncated-payload、带尺寸证据，且重试时同样认它', async () => {
+    // 场景：判定**进行中**预算被改小（设置页保存 / 并发重载）。造法就是真实成因——
+    // 在判定的异步步骤里调一次 `save-plugin` 把预算降下来：闸门（判定前）看到的是旧预算，
+    // 而 `judgeOnce` 的尺寸检查看到的是新预算。
+    const prev = JSON.parse(readFileSync(allowlistPath, 'utf8')).truncatedAction
+    const big = 'echo PIPELINE-BUDGET ' + 'x'.repeat(9000)   // >8192（新预算）、<20000（旧预算）
+    try {
+      setAllowlist({ truncatedAction: 'reject' })
+      // ① 第一次就撞：与闸门同一条规则、同一个 path，证据必须是 `request=N>B`
+      await withJudge(async function* () {
+        yield { type: 'text-delta', text: '类别: safe\n风险等级: low' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }, async () => {
+        const orig = ctx.llm.resolveModelInfo
+        let shrunk = false
+        ctx.llm.resolveModelInfo = async (...a) => {
+          if (!shrunk) {
+            shrunk = true
+            await ctx._rpc('save-plugin', { judgeRequestBudget: 8192 })
+          }
+          return orig(...a)
+        }
+        const first = await runCase(ctx, { command: big, reason: 'escalate sandbox to danger-full-access: 预算' })
+        assert.equal(shrunk, true, '预算必须在判定途中被改小（这才是被测的竞态）')
+        assert.equal(first.outcome, 'rejected', '首次撞预算要按 truncatedAction=reject 拒绝（不许弹人工框）')
+        const row = first.events[first.events.length - 1]
+        assert.equal(row.path, 'truncated-payload', '判定路径的超预算与闸门同一条 path')
+        assert.equal(row.src, 'truncated')
+        assert.match(String(row.judgeReason), /err\.judgePayloadOversize request=\d+>8192/, '尺寸证据要落事件')
+        const leaf = ctx._emits.filter((e) => e.name === 'auto-approve/decision').pop()
+        assert.equal(leaf.payload.outcome, 'rejected')
+        assert.equal(leaf.payload.src, 'truncated', '叶子也要带 src（否则 denyReason 归因错成别的）')
+      })
+      // ② 第一次空输出、重试前才撞：也必须按 truncatedAction 处置，不能退化成「模型调用失败」
+      let attempts = 0
+      await withJudge(async function* () {
+        attempts += 1
+        if (attempts === 1) {
+          // 第一次：预算在这一次判定里被改小，模型一个字都没吐 → 触发换大预算重试
+          await ctx._rpc('save-plugin', { judgeRequestBudget: 8192 })
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        yield { type: 'text-delta', text: '类别: safe\n风险等级: low' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }, async () => {
+        const retried = await runCase(ctx, { command: big, reason: 'escalate sandbox to danger-full-access: 预算' })
+        assert.equal(attempts, 1, '重试必须在「尺寸检查」就撞预算：模型根本不该被第二次问到')
+        assert.equal(retried.outcome, 'rejected', '重试时撞预算仍然按 truncatedAction，不许变成「调用失败 → 转人工」')
+        const row = retried.events[retried.events.length - 1]
+        assert.equal(row.path, 'truncated-payload')
+        assert.equal(row.src, 'truncated')
+        assert.match(String(row.judgeReason), /err\.judgePayloadOversize request=\d+>8192/)
+      })
+    } finally {
+      // 现场必须恢复：这个 fixture 是共享的（另一个用例就栽在没恢复 truncatedAction 上）
+      setAllowlist({ truncatedAction: prev })
+    }
+  })
+
+  it('三条「看不见这次操作」的拒绝叶子都带 src（归因不能混成同一句）', async () => {
+    // 「参数没采集到」与「操作太大别再发」是两句不同的交代：`denyReasonKey` 按 src 派生，
+    // 叶子丢了 src 就都变成 payload-truncated——而叶子是文档化的只读面（CHANGELOG 0.4.0）。
+    const skipPre = await runCase(ctx, { command: 'echo 没采集到', reason: 'escalate sandbox to danger-full-access: 叶子', skipPre: true })
+    assert.equal(skipPre.outcome, 'rejected')
+    const leaf = ctx._emits.filter((e) => e.name === 'auto-approve/decision').pop()
+    assert.equal(leaf.payload.src, 'uncaptured')
+    assert.equal(leaf.payload.denyReason, 'payload-uncaptured')
   })
 
   it('快照不再下发历史别名 denyKeywords（一个概念一个键）', async () => {
@@ -676,6 +928,65 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     }
   })
 
+  it('转人工事件带顶层 level / levelSrc：审批框的「自动判定」读的就是它', async () => {
+    // 客户端 `verdictLineFromEvent` 先读顶层 `e.level`（其次 `e.judge.level`）。此前
+    // `recordEvent` 的白名单里没有这两个字段，等于客户端读的是没有生产者的数据。
+    const { events } = await withJudge('类别: bulk\n风险等级: medium\n理由: 递归强制删', () => runCase(ctx, {
+      command: 'echo PIPELINE-LEVEL-TOP',
+      reason: 'escalate sandbox to danger-full-access: 等级要落顶层',
+      nextFn: async () => 'allowed-once',
+    }))
+    const pending = events.find((e) => e.kind === 'manual-pending')
+    assert.ok(pending, '要有等待人工那一条：' + JSON.stringify(events.map((e) => e.kind)))
+    assert.equal(pending.level, 'medium')
+    assert.equal(pending.levelSrc, 'parsed')
+  })
+
+  it('撞收集护栏的调用不许被允许桶放行（允许在闸门之后）', async () => {
+    // 「允许桶必须在闸门之后」此前只覆盖了超预算那一半：撞收集护栏那一半可以被允许词短路，
+    // 而护栏意味着插件根本没看全这次调用——放行它等于让一次看不见的操作直接跑。
+    setAllowlist({ rejectKeywords: [], humanKeywords: [], allowKeywords: ['SAFE-ALLOW-TOKEN'], truncatedAction: 'human' })
+    try {
+      const r = await runCase(ctx, {
+        command: 'echo SAFE-ALLOW-TOKEN ' + 'y'.repeat(9 * 1024 * 1024),
+        reason: 'escalate sandbox to danger-full-access: 护栏里带允许词',
+      })
+      assert.equal(r.outcome, 'web-human', '撞护栏 → 按 truncatedAction，允许词不许短路它')
+      const ev = r.events.find((e) => e.path === 'truncated-payload')
+      assert.equal(ev.src, 'oversize')
+      assert.equal(r.events.some((e) => e.path === 'keyword-allow'), false, '不许出现「关键词允许」这条路径')
+    } finally {
+      setAllowlist({ rejectKeywords: shippedRejectKeywords(), humanKeywords: ['NEEDS-HUMAN-TOKEN'], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
+    }
+  })
+
+  it('判定超时与调用失败要落不同的 src（闭集档位不许混成一个）', async () => {
+    // `failureSrc` 把 err.judgeTimeout 退化成 call 时全部用例照绿，而事件里的 src 与
+    // `denyReason`（judge-timeout vs judge-call）会静默改变——排障时「超时」被读成「调用失败」。
+    const calls = []
+    // 让计时器立刻触发：判定超时（路由正常、模型永不返回）
+    const origTimeout = ctx.timeout
+    ctx.timeout = (fn) => { const t = setTimeout(fn, 0); return () => clearTimeout(t) }
+    let timedOut
+    try {
+      timedOut = await withJudge(() => (async function* () {
+        calls.push(1)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        yield { type: 'text-delta', text: '类别: safe\n理由: 太晚了' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(), () => runCase(ctx, {
+        command: 'echo PIPELINE-TIMEOUT-SRC',
+        reason: 'escalate sandbox to danger-full-access: 判定超时',
+      }), { efforts: [] })
+    } finally {
+      ctx.timeout = origTimeout
+    }
+    const ev = timedOut.events.find((e) => e.path === 'criteria-human') || timedOut.events.find((e) => e.path === 'criteria-reject')
+    assert.ok(ev, '要有判定事件：' + JSON.stringify(timedOut.events.map((e) => e.path)))
+    assert.equal(ev.src, 'timeout', '超时必须标 timeout，不许退化成 call')
+    assert.equal(ev.denyReason, 'judge-timeout')
+  })
+
   it('判定失败固定转人工：other 三格怎么配都不影响（用户的显式要求）', async () => {
     // 「判定压根没跑成」（route/empty/timeout/call/plugin）不是模型的结论，不许被
     // other 的格子放大成自动放行、也不许变成没有人参与的硬拒绝。
@@ -720,7 +1031,7 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
       assert.equal(events.some((e) => e.path === 'missing-payload'), false)
       assert.ok(events.some((e) => e.path === 'criteria-allow'))
     } finally {
-      setAllowlist({ missingPayloadAction: 'human' })
+      dropAllowlistKeys('missingPayloadAction')
     }
   })
 
@@ -902,6 +1213,91 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
     assert.equal(aEv.denyReason, undefined, '放行事件没有「为什么被拒」可言')
   })
 
+  it('三条 truncated-payload 路径都必须打日志；护栏与超预算的拒绝事件也要带 src', async () => {
+    // AGENTS 契约：超预算 / 撞收集护栏 / 没采集到参数**三条都要 console.warn**
+    // （用户明确要求「不能出现不知道为什么转人工了」），三条的决策叶子也都要带 src。
+    // 此前只有「超预算」那条有日志断言，另外两条的 warn 与「护栏→拒绝」的 src 删掉都没人发现。
+    const warnings = []
+    const origWarn = console.warn
+    console.warn = (...a) => { warnings.push(a.join(' ')) }
+    let uncaptured
+    let guard
+    let budget
+    try {
+      // ① 没采集到参数：无条件拒绝（不看 truncatedAction）
+      setAllowlist({ truncatedAction: 'human' })
+      uncaptured = await runCase(ctx, {
+        command: 'echo unseen', reason: 'escalate sandbox to danger-full-access: 没采集到', skipPre: true,
+      })
+      // ②③ 护栏与超预算配成拒绝：两条都要带各自的 src
+      setAllowlist({ truncatedAction: 'reject' })
+      guard = await runCase(ctx, {
+        command: 'y'.repeat(9 * 1024 * 1024), reason: 'escalate sandbox to danger-full-access: 护栏拒绝',
+      })
+      budget = await runCase(ctx, {
+        command: 'echo ' + 'x'.repeat(30000), reason: 'escalate sandbox to danger-full-access: 超预算拒绝',
+      })
+    } finally {
+      console.warn = origWarn
+      setAllowlist({ truncatedAction: 'human' })
+    }
+    assert.equal(uncaptured.outcome, 'rejected')
+    assert.ok(warnings.some((w) => w.includes('没采集到参数')), '没采集到参数必须打日志')
+    assert.equal(uncaptured.events.find((e) => e.path === 'truncated-payload').src, 'uncaptured')
+
+    assert.equal(guard.outcome, 'rejected')
+    const gEv = guard.events.find((e) => e.path === 'truncated-payload')
+    assert.equal(gEv.src, 'oversize', '护栏→拒绝的事件同样要标 src（此前只有转人工那条被钉住）')
+    assert.match(gEv.judgeReason, /err\.payloadOversize oversize=collect>8388608/)
+    assert.equal(gEv.denyReason, 'payload-truncated')
+    assert.ok(warnings.some((w) => w.includes('撞收集护栏')), '撞护栏必须打日志')
+
+    assert.equal(budget.outcome, 'rejected')
+    const bEv = budget.events.find((e) => e.path === 'truncated-payload')
+    assert.equal(bEv.src, 'truncated')
+    assert.ok(warnings.some((w) => w.includes('送审内容超过预算')), '超预算必须打日志')
+  })
+
+  it('人工结局的 outcome 显式落盘：取消 / 没人在场都不写 rejected', async () => {
+    // `applyHumanOutcome` 的 outcome 决定审批历史与提示条怎么渲染：写错成 'rejected'
+    // 会让「用户中止本轮」显示成「人拒绝了」。cancelled / unavailable 只写空 → recordEvent 丢字段。
+    setAllowlist({ humanKeywords: ['NEEDS-HUMAN-TOKEN'], rejectKeywords: [], allowKeywords: [] })
+    try {
+      const cancelled = await runCase(ctx, {
+        command: 'echo NEEDS-HUMAN-TOKEN',
+        reason: 'escalate sandbox to danger-full-access: 取消',
+        nextFn: async () => 'cancelled',
+      })
+      assert.equal(cancelled.outcome, 'cancelled')
+      const cEv = cancelled.events.find((e) => e.kind === 'manual-cancelled')
+      assert.ok(cEv, '取消要有自己的事件 kind')
+      assert.notEqual(cEv.outcome, 'rejected', '不是人拒的，不许写成 rejected')
+      assert.equal(cEv.outcome, undefined, 'cancelled 不写 outcome（空串会被 put() 丢掉）')
+
+      const unavailable = await runCase(ctx, {
+        command: 'echo NEEDS-HUMAN-TOKEN',
+        reason: 'escalate sandbox to danger-full-access: 没人在场',
+        nextFn: async () => { throw new Error('no answerer') },
+      })
+      assert.equal(unavailable.outcome, 'unavailable')
+      const uEv = unavailable.events.find((e) => e.kind === 'manual-unavailable')
+      assert.ok(uEv)
+      assert.notEqual(uEv.outcome, 'rejected')
+      assert.equal(uEv.outcome, undefined)
+
+      // 对照：人明确拒绝时要写 rejected（这样客户端才会渲染成「已拒绝」）
+      const denied = await runCase(ctx, {
+        command: 'echo NEEDS-HUMAN-TOKEN',
+        reason: 'escalate sandbox to danger-full-access: 人拒',
+        nextFn: async () => 'rejected',
+      })
+      assert.equal(denied.outcome, 'rejected')
+      assert.equal(denied.events.find((e) => e.kind === 'manual-rejected').outcome, 'rejected')
+    } finally {
+      setAllowlist({ rejectKeywords: shippedRejectKeywords(), humanKeywords: ['NEEDS-HUMAN-TOKEN'], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
+    }
+  })
+
   it('MCP 纯开关参数不再算「没给参数」：模型能看到 recursive/force', async () => {
     // 这类调用以前 args 是空的 → 走 missing-payload（默认转人工），
     // 而 recursive/force 恰恰是判断危险性最需要的信息。
@@ -960,8 +1356,8 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
         rejectKeywords: shippedRejectKeywords(),
         allowKeywords: ['SAFE-ALLOW-TOKEN'],
         truncatedAction: 'human',
-        missingPayloadAction: 'human',
       })
+      dropAllowlistKeys('missingPayloadAction')
     }
   })
 
@@ -1026,6 +1422,65 @@ describe('approval/request 三条路径', { concurrency: false }, () => {
       const contexts = await postExecute(ctx, { toolName: 'bash', session: sessionOf('ws-pipeline'), callId: '' })
       const text = contexts.map((c) => (c.content || []).map((x) => x.text || '').join('')).join('\n')
       assert.match(text, /重新发起同一次调用/, '模型必须被告知重发，而不是「用户拒绝」')
+    } finally {
+      setAllowlist({ rejectKeywords: shippedRejectKeywords(), humanKeywords: ['NEEDS-HUMAN-TOKEN'], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
+    }
+  })
+
+  it('无 callId 的归因只归那次无 callId 的调用，别的（有 callId 的）调用吃不到', async () => {    // 兜底键（session+工具名）是「无 callId 那条路径」写的，读侧也必须在**本次调用自己没有
+    // callId** 时才查它。此前读侧在「有 callId 但精确键未命中」时也回落兜底键，于是同会话里
+    // 另一次同名调用会把归因吃掉：成功放行的那次收到「自动审批拒绝了 bash」，
+    // 而真被拒的那次（模型看到的仍是被拒）反而一个原因都没有——错误归因比没有原因更糟。
+    setAllowlist({ rejectKeywords: [], humanKeywords: [], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
+    try {
+      const session = sessionOf('ws-pipeline')
+      const handlers = ctx._listeners.get('approval/request') || []
+      // 第一条：没有 callId、也没走 pre-execute →「参数没采集到」→ 直接拒绝（归因落在兜底键）
+      const first = await handlers[0]({
+        agent: { session }, toolName: 'bash', callId: '', reason: 'escalate sandbox to danger-full-access: 无 callId 的那次',
+      }, async () => 'web-human')
+      assert.equal(first, 'rejected')
+      // 第二条：有 callId 的同名调用，命中允许桶 → 放行
+      const second = await runCase(ctx, { command: 'echo SAFE-ALLOW-TOKEN', reason: 'escalate sandbox to danger-full-access: 放行的那次' })
+      assert.equal(second.outcome, 'allowed-once')
+      const allowedText = JSON.stringify(await postExecute(ctx, { toolName: 'bash', session, callId: second.callId }))
+      assert.doesNotMatch(allowedText, /自动审批拒绝了/, '放行的调用不许收到别人的拒绝归因')
+      // 真被拒的那次（无 callId）仍然拿得到自己的原因
+      const deniedText = JSON.stringify(await postExecute(ctx, { toolName: 'bash', session, callId: '' }))
+      assert.match(deniedText, /没有采集到/, '归因要留给写它的那次调用')
+    } finally {
+      setAllowlist({ rejectKeywords: shippedRejectKeywords(), humanKeywords: ['NEEDS-HUMAN-TOKEN'], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
+    }
+  })
+
+  it('通知消息带唯一 id：同一步里的两条拒绝不会撞收件箱唯一性', async () => {
+    // DSH 收件箱对 pending 消息强制 id 唯一（`Message.id` 必填，缺 id 就是 `undefined`）。
+    // 两条通知都不带 id 时共用同一个 `undefined`：同一步里的第二次拒绝一插入，收件箱折叠就抛
+    // `message "undefined" is already pending` —— 整轮失败，那条通知也永久丢失（实测过）。
+    setAllowlist({ rejectKeywords: ['NEEDS-ID-TOKEN'], humanKeywords: [], allowKeywords: [] })
+    try {
+      const session = sessionOf('ws-pipeline')
+      const first = await runCase(ctx, {
+        command: 'echo NEEDS-ID-TOKEN one',
+        reason: 'escalate sandbox to danger-full-access: 并发拒绝一',
+      })
+      const second = await runCase(ctx, {
+        command: 'echo NEEDS-ID-TOKEN two',
+        reason: 'escalate sandbox to danger-full-access: 并发拒绝二',
+      })
+      assert.equal(first.outcome, 'rejected')
+      assert.equal(second.outcome, 'rejected')
+      const notices = []
+      for (const callId of [first.callId, second.callId]) {
+        const contexts = await postExecute(ctx, { toolName: 'bash', session, callId })
+        assert.equal(contexts.length, 1, '每次拒绝各出一条通知')
+        notices.push(contexts[0])
+      }
+      for (const [i, notice] of notices.entries()) {
+        assert.equal(typeof notice.id, 'string', `第 ${i + 1} 条通知必须带 id`)
+        assert.ok(notice.id.length > 0, `第 ${i + 1} 条通知的 id 不能为空`)
+      }
+      assert.notEqual(notices[0].id, notices[1].id, '两条通知不能共用同一个 id')
     } finally {
       setAllowlist({ rejectKeywords: shippedRejectKeywords(), humanKeywords: ['NEEDS-HUMAN-TOKEN'], allowKeywords: ['SAFE-ALLOW-TOKEN'] })
     }
@@ -1288,6 +1743,7 @@ describe('取消竞态与人工结局归因（review 修复）', { concurrency: 
       assert.equal(ev.tool, 'bash')
       assert.equal(ev.src, 'plugin')
       assert.equal(ev.path, 'plugin-error', '转人工也要把「插件异常」这条路径记下来')
+      assert.equal(ev.callId, callId, '插件异常那条也要带 callId（否则审批框查不到它）')
       // 人工结论必须回填归因：批准 → 没有拒绝通知；人拒 → 归因写成人工拒绝；
       // 没结论 → 转人工但拿不到结论。否则 approved-once 也会收到「机器判定拒绝了」。
       const cases = [
@@ -1308,9 +1764,10 @@ describe('取消竞态与人工结局归因（review 修复）', { concurrency: 
     }
   })
 
-  it('判定阶段抛错（humanFallback 已就绪）→ 转人工并带出正确身份', async () => {
-    // 与前一条互补：异常发生在 `humanFallback` 挂上之后，走的是 `toHuman({ info })` 那条路。
-    // 身份必须由 catch 现算的那份传下去——用 `baseInfo` 会丢掉 sessionId / 工具名。
+  it('判定阶段抛错（humanFallback 还没挂上）→ 兜底分支自己记身份', async () => {
+    // 注意这条**不是** humanFallback 那条路：`req.signal` 的第一次读取（外层那道
+    // `aborted` 早退）发生在 `humanFallback = toHuman` 之前，所以异常落在更早的兜底分支
+    // （下面另有一条用例真覆盖 humanFallback）。这里要钉的是：兜底分支自己从 req 现算身份。
     const session = sessionOf('ws-pipeline')
     const req = {
       agent: { session },
@@ -1323,11 +1780,16 @@ describe('取消竞态与人工结局归因（review 修复）', { concurrency: 
     const handlers = ctx._listeners.get('approval/request') || []
     const outcome = await handlers[0](req, async () => 'web-human')
     assert.equal(outcome, 'web-human', '判定没跑成 → 转人工')
-    const ev = eventRows().filter((e) => e.path === 'plugin-error').pop()
+    const rows = eventRows().filter((e) => e.path === 'plugin-error' && e.callId === 'call-late-plugin-error')
+    const ev = rows.find((e) => e.kind === 'manual-pending')
     assert.ok(ev, '转人工路径也要把 plugin-error 记下来')
-    assert.equal(ev.sessionId, 'sess-pipeline', '身份要从 req 现算（sessionOf 的固定 id）')
+    assert.equal(ev.sessionId, session.id, '身份要从 req 现算')
     assert.equal(ev.tool, 'bash')
     assert.equal(ev.src, 'plugin')
+    // 人工结论也必须收口：只 `settleDeny` 的话审批历史里那一行永远停在「等待人工审批」
+    // （客户端 latestUnsettledPending 每次挂载都会重新显示它），也没有 OUTCOME 审计行。
+    assert.ok(rows.some((e) => e.kind === 'manual-unavailable'), '兜底分支的人工结论要落事件')
+    assert.match(readFileSync(pathsFor().audit, 'utf8'), /OUTCOME bash outcome=web-human source=web/)
   })
 
   it('无 callId 时归因撞车不覆盖：宁可不写也不写错', async () => {

@@ -183,15 +183,34 @@ export function normalizePreJudgeAction(value) {
 
 /** 说明按「可回补性 + 影响范围」写，与各行说明的「改的是什么」正交。 */
 const LEVEL_DESCRIPTIONS_ZH = {
-  low: '可原样回补、影响范围限于本次工作区或临时产物的操作',
+  low: '可原样回补、且改动只落在本次工作区内的操作（含工作区里的临时产物与构建产物）',
   medium: '可回补但需要额外步骤，或只影响本机配置、缓存、工作区外文件的常规操作',
   high: '不可回补，或影响远端、生产、他人、系统与凭据的操作',
 }
 
 const LEVEL_DESCRIPTIONS_EN = {
-  low: 'the operation can be reverted as-is and only affects this workspace or scratch artifacts',
+  low: 'the operation can be reverted as-is and its changes stay inside this workspace (including scratch and build artifacts created there)',
   medium: 'the operation can be reverted but needs extra steps, or only touches local config, caches, or files outside the workspace',
   high: 'the operation cannot be reverted, or affects remote systems, production, other people, the OS, or credentials',
+}
+
+/**
+ * 出厂等级说明的**历史版本**。
+ *
+ * 出厂文案改了，老文件里的旧原文必须仍被认成「出厂原文」，否则 `syncShippedLevels`
+ * 只认当前出厂文本 → 升级后用户手里的旧说明永远刷不成新版（与 `RETIRED_DEFAULT_KEYWORDS`
+ * 同一个用意）。用户自己改过的一个字都不在表里，因此不会被覆盖。
+ *
+ * 2026-09-16：low 原来写「影响范围限于本次工作区**或临时产物**」，与 medium 的
+ * 「工作区外文件、缓存」直接重叠——实测同一个「工作区外写一个临时文件」既被判过 low
+ * （自动放行）也被判过 medium（转人工）。收紧成「只落在本次工作区内」，把工作区外
+ * 一律交给 medium。
+ */
+const LEGACY_LEVEL_DESCRIPTIONS = {
+  low: [
+    '可原样回补、影响范围限于本次工作区或临时产物的操作',
+    'the operation can be reverted as-is and only affects this workspace or scratch artifacts',
+  ],
 }
 
 export const DEFAULT_LEVELS_ZH = { fallback: 'high', descriptions: LEVEL_DESCRIPTIONS_ZH }
@@ -278,7 +297,7 @@ export const DEFAULT_CRITERIA_ZH = [
   { id: 'deletion', description: '删除、清空或截断、不可逆覆盖用户数据、数据库、备份、历史或未提交内容时选它（看命令、路径、写入内容）；单文件常规源码/文档编辑不算；能确认是本地/临时开发库（如 sqlite3 dev.db、一次性测试库）的常规改动也不算', actions: defaultRowActions() },
   { id: 'credential', description: '密钥、token、证书私钥、.env、authorized_keys、kubeconfig、~/.aws、带 token 的 .npmrc、docker config.json、git/pypi 凭据或授权登录配置被改动时选它（看路径或写入内容）', actions: defaultRowActions() },
   { id: 'remote', description: '对远程主机、生产环境或数据库做写入，或执行 ssh/kubectl/云 CLI 变更、不可逆的云资源删除（s3 rb --force、gh repo delete、kubectl delete、terraform destroy）、改写远端历史的强制推送（git push --force/-f 到共享分支）、破坏性 SQL（DROP/TRUNCATE、不带条件的 DELETE）、npm/pypi publish、生产部署时选它（看实际命令）；只读查询和普通 git push 不算；能确认是本地/临时开发库的常规改动不算（连接目标不明确时仍按本行判）', actions: defaultRowActions() },
-  { id: 'system', description: '改动 /etc、/usr、/boot、/root、/var、/opt、Windows 系统目录、系统服务与防火墙、关机重启、用户与权限管理（useradd/userdel/passwd/visudo/chown -R、把系统目录权限放宽到 777）、crontab、shell rc、用户启动项时选它（看命令或路径）；包管理器往系统前缀安装也算', actions: defaultRowActions() },
+  { id: 'system', description: '改动 /etc、/usr、/boot、/root、/var、/opt、Windows 系统目录、系统服务与防火墙、关机重启、用户与权限管理（useradd/userdel/passwd/visudo/chown -R、把系统目录权限放宽到 777）、crontab、shell rc、用户启动项时选它（看命令或路径）；包管理器往系统前缀安装也算；/tmp、/var/tmp 这类临时目录下的临时产物按实际操作判，不因路径落在 /var 就选本行', actions: defaultRowActions() },
   { id: 'bulk', description: '递归、通配或循环地删除/覆盖用户数据、源码、配置或未提交内容，或执行格式化、向块设备写 dd、git reset --hard、git clean、rsync --delete、销毁数据卷（docker volume rm/prune、docker system prune --volumes）时选它（看实际命令）；删掉可再生成的依赖、构建、缓存或临时目录（node_modules、dist、build、.cache、coverage、target、tmp）不算', actions: defaultRowActions() },
   { id: 'approval-config', description: '修改自动审批插件自己的配置——allowlist、plugin config、profile patch（cordis.patch.yml，默认都在 ~/.dsh 下）——或其它会改审批规则/门控的配置时选它（看路径或命令）', actions: defaultRowActions() },
   { id: 'safe', description: '能确认是常规可回补操作时选它（看命令、路径、写入内容）：源码/文档/测试改动、构建产物、安装项目依赖、清日志或缓存、清理临时目录或中间产物、本地/临时开发库的常规改动、可撤销的单文件编辑；发包、提权、外发数据、用户数据或源码本身不要选。拿不准不要选此项', actions: defaultRowActions() },
@@ -290,7 +309,7 @@ export const DEFAULT_CRITERIA_EN = [
   { id: 'deletion', description: 'Pick this when user data, databases, backups, history, or uncommitted work is deleted, emptied, truncated, or irreversibly overwritten (look at command, path, write contents); ordinary single-file source or docs edits do not count, and routine changes to a clearly local or temporary dev database (sqlite3 dev.db, a throwaway test database) do not count either', actions: defaultRowActions() },
   { id: 'credential', description: 'Pick this when secrets, tokens, private keys, .env, authorized_keys, kubeconfig, ~/.aws, .npmrc with tokens, docker config.json, git/pypi credentials, or auth/login config are changed (look at path or write contents)', actions: defaultRowActions() },
   { id: 'remote', description: 'Pick this when remote hosts, production, or databases are written to, or when ssh/kubectl/cloud CLI mutations, irreversible cloud deletions (s3 rb --force, gh repo delete, kubectl delete, terraform destroy), history-rewriting force pushes (git push --force/-f to a shared branch), destructive SQL (DROP/TRUNCATE, DELETE without WHERE), npm/pypi publish, or production deploys run (look at the actual command); read-only queries and ordinary git push do not count, and routine changes to a clearly local or temporary dev database do not count either (when the connection target is unclear, still pick this row)', actions: defaultRowActions() },
-  { id: 'system', description: 'Pick this when /etc, /usr, /boot, /root, /var, /opt, Windows system directories, services and firewall, shutdown/reboot, user and permission management (useradd/userdel/passwd/visudo/chown -R, loosening system directory permissions to 777), crontab, shell rc, or user startup items change (look at command or path); package-manager installs into a system prefix also count', actions: defaultRowActions() },
+  { id: 'system', description: 'Pick this when /etc, /usr, /boot, /root, /var, /opt, Windows system directories, services and firewall, shutdown/reboot, user and permission management (useradd/userdel/passwd/visudo/chown -R, loosening system directory permissions to 777), crontab, shell rc, or user startup items change (look at command or path); package-manager installs into a system prefix also count; scratch files under temp directories such as /tmp or /var/tmp are judged by what they actually do, not by the /var prefix', actions: defaultRowActions() },
   { id: 'bulk', description: 'Pick this when user data, source, config, or uncommitted work is deleted or overwritten recursively, by glob, or in a loop, or when format, dd onto a block device, git reset --hard, git clean, rsync --delete, or volume destruction (docker volume rm/prune, docker system prune --volumes) runs (look at the actual command); deleting regenerable dependency, build, cache, or scratch directories (node_modules, dist, build, .cache, coverage, target, tmp) does not count', actions: defaultRowActions() },
   { id: 'approval-config', description: 'Pick this when the auto-approve plugin changes its own config — the allowlist, plugin config, or profile patch (cordis.patch.yml; all under ~/.dsh by default) — or when any other file that changes approval rules/gating is written (look at path or command)', actions: defaultRowActions() },
   { id: 'safe', description: 'Pick this only for confirmed routine reversible work (look at command, path, write contents): source/docs/test edits, build artifacts, installing project dependencies, clearing logs or caches, cleaning scratch or intermediate directories, routine changes to a clearly local or temporary dev database, undoable single-file edits. Do not pick this for publishing, privilege escalation, sending data out, or deleting user data or source itself. Do not pick this if unsure', actions: defaultRowActions() },
@@ -316,7 +335,15 @@ export function cloneShippedRow(def) {
 }
 
 export function normalizePresetSandbox(value) {
-  return value === 'read-only' ? 'read-only' : 'workspace-write'
+  // 手写的 `"READ-ONLY"` / `" read-only "` 与 `read-only` 是同一个意思：不先归一就把它当「认不出」，
+  // 会让启动路径拿默认 workspace-write 去改写用户手写的 `sandbox: read-only`（放宽沙箱）。
+  return String(value == null ? '' : value).trim().toLowerCase() === 'read-only' ? 'read-only' : 'workspace-write'
+}
+
+/** 这个值是不是**认得出的** sandbox（认不出的按「用户没表达有效意见」处理，不许拿去写盘）。 */
+export function isKnownPresetSandbox(value) {
+  const t = String(value == null ? '' : value).trim().toLowerCase()
+  return t === 'read-only' || t === 'workspace-write' || t === 'danger-full-access'
 }
 
 export function slugCriterionId(value) {
@@ -334,7 +361,15 @@ export function slugCriterionId(value) {
 export function normalizeCriterion(raw) {
   const row = raw && typeof raw === 'object' ? raw : {}
   const legacyLabel = String(row.label == null ? '' : row.label).trim()
-  const id = slugCriterionId(row.id || legacyLabel)
+  /**
+   * id 的三级取法（缺一级就整行消失，那是**静默数据丢失**——实测：手写 `id: "中文类别"` 的行
+   * 在 `snapshot` 里就没了，下一次写盘还会把它从磁盘上抹掉，说明与三格一起）：
+   * ① `id` 归一成 slug；② 不行就用旧 `label` 当 id（AGENTS 承诺「label 先当 id」）；
+   * ③ 还不行就**原样保留** `id`（中文/大写/带空格都能上卡片与提示词，用户自己写的行不该被删）。
+   * 真正的空行（既没有 id 也没有 label）仍然丢弃。
+   */
+  const rawId = String(row.id == null ? '' : row.id).trim()
+  const id = slugCriterionId(rawId) || slugCriterionId(legacyLabel) || rawId
   if (!id) return null
   const description = String(row.description == null ? '' : row.description).trim() || legacyLabel || id
   const given = row.actions && typeof row.actions === 'object' ? row.actions : null
@@ -601,13 +636,34 @@ export function normalizeAllowlist(raw) {
       seedDefaultRowActions(row)
     }
   }
+  if (prevVersion < 23) {
+    // 23：`system` 行原来按路径清单认领 `/var`，`safe` 行又认领「临时目录/中间产物」——
+    // 实测同一个「工作区外写一个临时文件」时而落 `system`、时而落 `safe`。八行三格同值时
+    // 动作一样，但用户按行拉开格子（例如把 safe 的 medium 改成 allow）之后，这种摇摆就会
+    // 变成「同一操作时而放行时而弹框」。`system` 行补一句消歧：临时产物按实际操作判。
+    // 只替换仍是上一版出厂原文的行，用户自己改过的说明一个字不动，三格更不碰。
+    const prevCopy = {
+      zh: '改动 /etc、/usr、/boot、/root、/var、/opt、Windows 系统目录、系统服务与防火墙、关机重启、用户与权限管理（useradd/userdel/passwd/visudo/chown -R、把系统目录权限放宽到 777）、crontab、shell rc、用户启动项时选它（看命令或路径）；包管理器往系统前缀安装也算',
+      en: 'Pick this when /etc, /usr, /boot, /root, /var, /opt, Windows system directories, services and firewall, shutdown/reboot, user and permission management (useradd/userdel/passwd/visudo/chown -R, loosening system directory permissions to 777), crontab, shell rc, or user startup items change (look at command or path); package-manager installs into a system prefix also count',
+    }
+    const hit = cfg.criteria.find((c) => c.id === 'system')
+    if (hit) {
+      for (const lang of ['zh', 'en']) {
+        if (hit.description !== prevCopy[lang]) continue
+        const def = (lang === 'zh' ? DEFAULT_CRITERIA_ZH : DEFAULT_CRITERIA_EN).find((c) => c.id === 'system')
+        if (def) hit.description = def.description
+        break
+      }
+    }
+  }
   cfg.levels = normalizeLevels(cfg.levels, null)
   // 判定前的兜底：只剩「参数没采集到 / 撞收集护栏 / 超过送审上限」。默认转人工，用户可改成拒绝。
   cfg.truncatedAction = normalizePreJudgeAction(cfg.truncatedAction)
   // 已退休的键：老配置里可能还留着 `missingPayloadAction`，读的时候丢掉，避免它继续出现在
   // 快照与下次写盘里（用户要求取消这个开关：「没超上限就一律交模型判」）。
   delete cfg.missingPayloadAction
-  cfg.version = 22
+  // 未来版本号不降级：回退到本构建又升级时，不该把已经跑过的迁移再跑一遍。
+  cfg.version = Math.max(23, Number(cfg.version) > 0 ? Math.floor(Number(cfg.version)) : 0)
   cfg.judgeTimeoutMs = Number(cfg.judgeTimeoutMs) > 0 ? Number(cfg.judgeTimeoutMs) : 20000
   delete cfg.allowRules
   delete cfg.denyRules
@@ -628,7 +684,7 @@ export function defaultPluginConfig() {
     presetSandbox: 'workspace-write',
     judgePromptLang: 'zh',
     judgePrompts: { zh: '', en: '' },
-    judge: { provider: '', model: '', reasoningEffort: '', timeoutMs: 20000 },
+    judge: { provider: '', model: '', reasoningEffort: '', timeoutMs: 20000, maxTokens: JUDGE_MAX_TOKENS_REASONING },
     // 全局送审预算（字符，量整条请求：系统提示词 + 卡片）。超过即不问模型，走 truncatedAction。
     judgeRequestBudget: JUDGE_REQUEST_BUDGET_DEFAULT,
     humanReview: normalizeHumanReview(null),
@@ -669,6 +725,7 @@ export function syncShippedLevels(levels, lang) {
   for (const id of JUDGE_LEVELS) {
     const cur = String(given[id] == null ? '' : given[id]).trim()
     const stillShipped = ['zh', 'en'].some((l) => shippedLevels(l).descriptions[id] === cur)
+      || (LEGACY_LEVEL_DESCRIPTIONS[id] || []).includes(cur)
     descriptions[id] = (cur === '' || stillShipped) ? target.descriptions[id] : cur
   }
   return { fallback: normalizeJudgeLevel(src.fallback) || target.fallback, descriptions }
@@ -917,11 +974,27 @@ export function mutateAllowlistOp(allowlist, op, kind, value) {
   return fail('err.unknownKind', { kind: String(kind || '') })
 }
 
+/**
+ * 判定档位的**唯一真名**。`off` 是历史拼写：它与「不配档位」在适配层是**同一个请求**
+ * （DSH `llm-pi-ai/adapter.ts` 先做 `reasoning === 'off' ? undefined : reasoning`），
+ * 插件算输出预算也一样（`judgeMaxTokens` 对两者走同一条分支），所以设置页只留「模型默认」一个选项。
+ * 留着 `off` 不只是多一个等价选项：`off` 还要走「档位必须在路由档位表里」那条校验，
+ * 而路由不把 `off` 列进档位表时，选它会让**每一次判定都以路由失败告终**（全量转人工）——
+ * 它在适配层根本不可能"不受支持"（先被删掉了）。读盘与保存都过 `mergePluginConfig`，所以在这里归一。
+ */
+export function normalizeJudgeEffort(value) {
+  const text = String(value == null ? '' : value).trim()
+  return text.toLowerCase() === 'off' ? '' : text
+}
+
 export function mergePluginConfig(base, overlay) {
   const d = defaultPluginConfig()
   const b = base && typeof base === 'object' ? base : {}
   const o = overlay && typeof overlay === 'object' ? overlay : {}
   const judge = { ...d.judge, ...(b.judge || {}), ...(o.judge || {}) }
+  judge.reasoningEffort = normalizeJudgeEffort(judge.reasoningEffort)
+  // 首轮输出预算：未配置 → 出厂默认，越界 clamp（`warnClampedSettings` 留痕）。
+  judge.maxTokens = normalizeJudgeMaxTokens(judge.maxTokens)
   /**
    * humanReview 逐键取，不做整块覆盖：设置页只提交自己改过的那几个键
    * （例如只切 enabled 时不能把用户改过的 toolName 冲回默认）。
@@ -939,7 +1012,10 @@ export function mergePluginConfig(base, overlay) {
       : (b.humanReview ? b.humanReview.noticeLang : undefined),
   })
   return {
-    onlyAutoApprovePreset: o.onlyAutoApprovePreset ?? b.onlyAutoApprovePreset ?? d.onlyAutoApprovePreset,
+    // 严格布尔：门控侧读法是 `onlyAutoApprovePreset !== false`（false = **每个预设**都门控，
+    // 其余值 = 只在 auto-approve 预设下门控）。不归一的话，手写的 `"false"`（带引号的字符串）
+    // 会被当成「不是 false」→ 静默丢掉更严的模式（失败开放）；`"yes"` / `1` 同理。
+    onlyAutoApprovePreset: (o.onlyAutoApprovePreset ?? b.onlyAutoApprovePreset ?? d.onlyAutoApprovePreset) === true,
     presetSandbox: normalizePresetSandbox(o.presetSandbox ?? b.presetSandbox ?? d.presetSandbox),
     judgePromptLang: normalizeJudgePromptLang(o.judgePromptLang ?? b.judgePromptLang ?? d.judgePromptLang),
     judgePrompts: {
@@ -986,15 +1062,67 @@ const DOTFILE_SECRET_KEYWORDS = ['.env', '.netrc']
  * @param {string[]} keywords - 关键词。
  * @param {{ permissiveDotfiles?: boolean }} [options]
  */
-export function looksDeny(text, keywords = DEFAULT_DENY_KEYWORDS, options = {}) {
-  const hay = String(text || '')
-  if (!hay) return false
-  const permissiveDotfiles = Boolean(options && options.permissiveDotfiles)
+/**
+ * 关键词匹配前的 **shell 归一化**（只用于匹配，不改原文本、不改归因里的原文）。
+ *
+ * 关键词红线是「零上下文就确定灾难、不让模型有发言权」的那几条，而 shell 会先做引号拼接、
+ * 反斜杠转义、`$IFS` 展开与行续接：`rm -rf "/"`、`m'k'fs.ext4`、`rm -rf ${IFS}/` 在 shell 眼里
+ * 与 `rm -rf /`、`mkfs.ext4` 完全一样，文本匹配却打不到——同一场灾难换个写法就从「硬拒」
+ * 降级成「交给模型判」，模型判错就是自动删根/覆写块设备（实测：六种拼写全部 allowed-once）。
+ *
+ * 只做**能确定等价**的变换，且只在原文本没命中时**额外**试一次（只会多拦、不会少拦）：
+ * 行续接、`${IFS}`/`$IFS` → 空格、反斜杠转义、去引号、空白折叠。
+ */
+/** ANSI-C 引用（`$'…'`）里的转义：shell 会解码后再拼进命令。 */
+function decodeAnsiCEscapes(body) {
+  return String(body == null ? '' : body).replace(
+    /\\(x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|([0-7]{1,3})|(.))/g,
+    (all, _whole, hex, u, big, oct, ch) => {
+      if (hex) return String.fromCharCode(parseInt(hex, 16))
+      if (u) return String.fromCodePoint(parseInt(u, 16))
+      if (big) {
+        const cp = parseInt(big, 16)
+        return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : all
+      }
+      if (oct) return String.fromCharCode(parseInt(oct, 8) & 0xff)
+      const map = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f', v: '\v', e: '\x1b', '\\': '\\', "'": "'", '"': '"' }
+      return Object.prototype.hasOwnProperty.call(map, ch) ? map[ch] : all
+    },
+  )
+}
+
+export function shellNormalizeForKeywords(text) {
+  const src = String(text == null ? '' : text)
+  /**
+   * 没有任何「变形字符」时归一化只能是空操作——省掉整段扫描（8MB 采集护栏上限的干草上
+   * 这是几百毫秒）。空白折叠**不算变形**：关键词内部的空格在匹配正则里本来就是 `\s+`
+   * （`rm   -rf   /` 不吃归一化也命中），所以只有引号/反斜杠/`$`/反引号/`--` 才可能改变结果。
+   */
+  if (!/["'`\\$]|--/.test(src)) return src
+  return src
+    .replace(/\$\{IFS\}|\$IFS/g, ' ')
+    // ANSI-C 引用：`$'\x72m -rf /'` 在 shell 里就是 `rm -rf /`。解转义要排在反斜杠/引号处理之前。
+    .replace(/\$'((?:[^'\\]|\\.)*)'/g, (all, body) => decodeAnsiCEscapes(body))
+    .replace(/\\\r?\n/g, '')
+    // 选项结束符 `--`（`rm -rf -- /` 就是 `rm -rf /`）：只吃**独立**的 `--`，长选项不动。
+    .replace(/(^|[\s;|&])--(?=[\s;|&]|$)/g, '$1')
+    // `--no-preserve-root` 只为一个目的存在（强删 `/`）：吃掉它，负载就回到出厂词
+    // `rm -rf /` 的形状。**这也是升级用户的唯一出路**——词表新增项不会迁移进已有配置
+    // （版本没 bump、add-only 同步会复活用户主动删掉的词），只靠那个新词等于只在
+    // 全新安装与「恢复默认关键词」上生效。
+    .replace(/(^|[\s;|&])--no-preserve-root(?=[\s;|&]|$)/g, '$1')
+    .replace(/\\(.)/g, '$1')
+    .replace(/["'`]/g, '')
+    .replace(/\s+/g, ' ')
+}
+
+/** 在**一份**文本上跑关键词表；命中返回关键词原文，否则空串。边界/例外规则只写在这里。 */
+function matchKeywordsInText(hay, keywords, permissiveDotfiles) {
   for (const raw of keywords) {
     const keyword = String(raw || '')
     if (!keyword) continue
     if (/[\u4e00-\u9fff]/.test(keyword)) {
-      if (hay.includes(keyword)) return true
+      if (hay.includes(keyword)) return keyword
       continue
     }
     const escaped = keyword
@@ -1010,9 +1138,26 @@ export function looksDeny(text, keywords = DEFAULT_DENY_KEYWORDS, options = {}) 
     const tail = PREFIX_MATCH_KEYWORDS.includes(keyword) ? '' : '(?=$|[^a-z0-9_])'
     const except = KEYWORD_EXCEPTIONS[keyword] || ''
     const re = new RegExp(`${lead}${escaped}${except}${tail}`, 'i')
-    if (re.test(hay)) return true
+    if (re.test(hay)) return keyword
   }
-  return false
+  return ''
+}
+
+/**
+ * 关键词命中判定。先在**原文本**上跑（既有行为一字不改），没命中时再用
+ * `shellNormalizeForKeywords` 归一化后跑一遍——只多拦、不少拦。
+ * @param {string} text - 干草。
+ * @param {string[]} keywords - 关键词。
+ * @param {{ permissiveDotfiles?: boolean }} [options]
+ */
+export function looksDeny(text, keywords = DEFAULT_DENY_KEYWORDS, options = {}) {
+  const hay = String(text || '')
+  if (!hay) return false
+  const permissiveDotfiles = Boolean(options && options.permissiveDotfiles)
+  if (matchKeywordsInText(hay, keywords, permissiveDotfiles)) return true
+  const normalized = shellNormalizeForKeywords(hay)
+  // 布尔化：`&&` 会把命中的关键词原文漏出去，而调用方（与测试）要的是 true/false。
+  return normalized !== hay && Boolean(matchKeywordsInText(normalized, keywords, permissiveDotfiles))
 }
 
 /**
@@ -1031,26 +1176,11 @@ export function matchDenyKeyword(text, keywords = DEFAULT_DENY_KEYWORDS, options
   const hay = String(text || '')
   if (!hay) return ''
   const permissiveDotfiles = Boolean(options && options.permissiveDotfiles)
-  for (const raw of keywords) {
-    const keyword = String(raw || '')
-    if (!keyword) continue
-    if (/[\u4e00-\u9fff]/.test(keyword)) {
-      if (hay.includes(keyword)) return keyword
-      continue
-    }
-    const escaped = keyword
-      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\s+/g, '\\s+')
-    const isDotfile = DOTFILE_SECRET_KEYWORDS.includes(keyword)
-    const asExt = /^\.[a-z][a-z0-9]{1,7}$/i.test(keyword) && !isDotfile
-    const relaxed = isDotfile && permissiveDotfiles
-    const lead = (asExt || relaxed) ? '' : '(?:^|[^a-z0-9_])'
-    const tail = PREFIX_MATCH_KEYWORDS.includes(keyword) ? '' : '(?=$|[^a-z0-9_])'
-    const except = KEYWORD_EXCEPTIONS[keyword] || ''
-    const re = new RegExp(`${lead}${escaped}${except}${tail}`, 'i')
-    if (re.test(hay)) return keyword
-  }
-  return ''
+  const direct = matchKeywordsInText(hay, keywords, permissiveDotfiles)
+  if (direct) return direct
+  // 拼写变形（引号/转义/`$IFS`）：归因仍报**词表里那个词**，不报变形后的文本。
+  const normalized = shellNormalizeForKeywords(hay)
+  return normalized !== hay ? matchKeywordsInText(normalized, keywords, permissiveDotfiles) : ''
 }
 
 /**
@@ -1086,15 +1216,22 @@ export function lookupCriteria(criteria, id) {
   const list = criteria || []
   const hit = list.find((c) => c && c.id === id)
   if (hit) return hit
-  // 兜底：normalizeCriteria 保证 `other` 在表里，所以正常走不到这里；真走到就回显出厂兜底行。
-  return list.find((c) => c && c.id === 'other')
-    || DEFAULT_CRITERIA.find((c) => c.id === 'other')
-    // 表里连 `other` 都没有 = 配置损坏：兜底行走**失败关闭**（三格全人工），
-    // 不跟随出厂默认——低风险放行是给「表正常工作」时的刻度，不是给损坏配置的。
-    || { id: 'other', description: 'other', actions: sameActions('human') }
+  // 兜底：normalizeCriteria 保证 `other` 在表里，所以正常走不到这里。
+  const other = list.find((c) => c && c.id === 'other')
+  if (other) return other
+  // 表里连 `other` 都没有 = 配置损坏：兜底行走**失败关闭**（三格全人工）。
+  // 这里曾经还夹着一层 `DEFAULT_CRITERIA.find((c) => c.id === 'other')`——出厂表永远有 other，
+  // 那一层恒真，于是「损坏配置」拿到的是出厂兜底行（low 格 allow），注释承诺的失败关闭
+  // 永远走不到。低风险放行是给「表正常工作」时的刻度，不是给损坏配置的。
+  return { id: 'other', description: 'other', actions: sameActions('human') }
 }
 
-const TOOL_ARG_KEYS = [
+/**
+ * 已知工具参数名的**规范顺序**。宿主投影（`pickToolArgsDetailed`）按它排序，
+ * 客户端详情行（`client.js` 的 `DETAIL_KEY_ORDER`）是它的复刻——两处不能互相 import，
+ * 所以这里导出给契约测试对拍（单侧调序会红）。
+ */
+export const TOOL_ARG_KEYS = [
   'command', 'file_path', 'path', 'old_string', 'new_string', 'content', 'description', 'workdir',
   'code', 'url', 'query', 'script', 'sql', 'prompt', 'input', 'text', 'body', 'message', 'pattern', 'selector',
 ]
@@ -1191,12 +1328,17 @@ function isPlainObject(value) {
 }
 
 /**
- * 键必须是对象自己的、函数不能带路径（`toJSON` 之类不能被当字段）；
- * 取值加 try/catch：getter 抛错不能把整次审批打挂。
+ * 键必须是对象自己的、函数不能带路径（`toJSON` 之类不能被当字段）；取值加 try/catch：
+ * getter 抛错不能把整次审批打挂。
+ *
+ * **不再按名字丢弃 `__proto__` / `constructor`**：要防的是「读到了原型上的东西」，而
+ * `hasOwnProperty` 已经挡住了——按名字丢键反而让 `{"__proto__":{…}}` 整条从管道里消失：
+ * 卡片上没有、关键词干草里没有、凭证键还与「真的没有参数」撞成同一个 `{}`
+ * （改名落在 `keep()` 里，见 `escapeArgKey`）。JSON.parse 出来的是**自有**属性，所以
+ * `{"__proto__":{…}}` 现在会照常上卡片、进干草、参与凭证键。
  */
 function safeEntry(value, key) {
   if (typeof key !== 'string') return null
-  if (key === '__proto__' || key === 'constructor') return null
   try {
     if (!Object.prototype.hasOwnProperty.call(value, key)) return null
     return value[key]
@@ -1204,6 +1346,16 @@ function safeEntry(value, key) {
     return null
   }
 }
+
+/**
+ * 写进参数表前要改名的键：`out['__proto__'] = v` 走的是原型 setter，**不是**新建自有属性
+ * ——字符串值被静默丢掉，对象值改的是原型。于是这个键既不上卡片也不进干草，更糟的是
+ * 凭证键把它整个抹掉：`{"__proto__":{…}}` 与 `{}` 规范化后是同一个键，人批准过的一次
+ * 「无参数调用」会放行一次参数完全不同的调用（凭证快通道在关键词层之前）。
+ * 按仓库既有的 `#` 后缀约定改名（值原样保留）；`constructor` 不用改——`out['constructor'] = v`
+ * 建的是自有属性，读侧由 `safeEntry` 的自有键检查兜住。
+ */
+const escapeArgKey = (key) => (key === '__proto__' ? '__proto__#raw' : key)
 
 /**
  * 顶层：已知字段照旧（空字符串保留：write content='' 是截断文件），其余键逐个递归收叶子。
@@ -1223,15 +1375,16 @@ function collectTopLevel(raw) {
   // 撞了就带后缀另起一格，**绝不覆盖**（后到的那条被吃掉的话，它既不上卡片也不进干草）。
   const keep = (key, value) => {
     if (value.length > RAW_COLLECT_GUARD_BYTES) { over = true; return '' }
-    let slot = key
+    // 原型 setter 的名字先改名（见 `escapeArgKey`）：不改会连值一起丢掉。
+    let slot = escapeArgKey(key)
     let n = 1
     while (Object.prototype.hasOwnProperty.call(out, slot)) {
       n += 1
-      slot = key + '#' + n
+      slot = escapeArgKey(key) + '#' + n
     }
     bytes += slot.length + value.length
     if (bytes > RAW_COLLECT_GUARD_BYTES) { over = true; return '' }
-    out[slot] = value
+    Object.defineProperty(out, slot, { value, enumerable: true, writable: true, configurable: true })
     return slot
   }
   for (const key of TOOL_ARG_KEYS) {
@@ -1372,7 +1525,12 @@ const clipWithBudget = (a, limits, budget, omit, clamp) => {
       continue
     }
     used += a[key].length
-    out[key] = clamp ? clamp(key, a[key], argLimitFor(key, limits)) : a[key]
+    // 建**自有**属性：`out['__proto__'] = v` 走原型 setter，键会被静默吞掉——
+    // 转人工那条路喂进来的是原始参数，事件里就会少一个参数（与 `keep()` 同一套写法）。
+    Object.defineProperty(out, key, {
+      value: clamp ? clamp(key, a[key], argLimitFor(key, limits)) : a[key],
+      enumerable: true, writable: true, configurable: true,
+    })
   }
   return out
 }
@@ -1398,16 +1556,24 @@ export function callCacheKey(sessionId, callId) {
   return sid ? sid + ':' + id : id
 }
 
+/**
+ * 同一个 `session:callId` 被记 ≥2 次时的**墓碑**。撞车不能只 `delete`：删掉之后键位重新
+ * 变空，第三条记录会照常 `set`，于是第一次调用的审批 take 到的是**第三条调用的参数**
+ * （判的是 A、执行的是 B），而第二、三次各自变成「没采集到」——同一次撞车在两个方向上
+ * 语义不对称。墓碑让 ≥2 次与 2 次完全同义。
+ */
+const CACHE_COLLIDED = Object.freeze({ collided: true })
+
 export function rememberCachedCall(map, sessionId, callId, args) {
   if (!map || typeof map.set !== 'function') return
   const key = callCacheKey(sessionId, callId)
   if (!key) return
-  // 同一个 `session:callId` 被记两次（网关/代理复用 id）：**两个都判「没采集到」**，
-  // 绝不能拿新参数去替旧的——那会让第一次调用的审批实际看的是第二次调用的参数
-  // （判的是 A、执行的是 B）。两侧都转成 `found=false` 之后按「参数没采集到」直接拒绝，
-  // 模型重发一次即可恢复。
+  // 同一个 `session:callId` 被记 ≥2 次（网关/代理复用 id）：**两个都判「没采集到」**，
+  // 绝不能拿新参数去替旧的——那会让第一次调用的审批实际看的是后面那次调用的参数
+  // （判的是 A、执行的是 B）。撞车即把这一格换成墓碑（后续同键的记录也维持墓碑），
+  // 取用时一律 `found=false`，按「参数没采集到」直接拒绝，模型重发一次即可恢复。
   if (map.has(key)) {
-    map.delete(key)
+    if (map.get(key) !== CACHE_COLLIDED) map.set(key, CACHE_COLLIDED)
     return
   }
   map.set(key, args)
@@ -1422,6 +1588,7 @@ export function rememberCachedCall(map, sessionId, callId, args) {
  * 取缓存参数。**只按本次请求的会话键查**：有 sessionId 就只认 `session:callId`，
  * 没有才回落裸 `callId`。跨会话回落是危险的——裸键可能是别的会话写的同号 call，
  * 会把不相干的参数当成这次要审的操作。命中后顺手删掉裸键，避免密钥片段留在 Map 里。
+ * 撞车墓碑（见 `CACHE_COLLIDED`）与「键不存在」对调用方是同一种结果：`found=false`。
  */
 export function takeCachedCall(map, sessionId, callId) {
   if (!map || typeof map.get !== 'function') return { found: false, args: {} }
@@ -1433,15 +1600,21 @@ export function takeCachedCall(map, sessionId, callId) {
   let args
   let found = false
   if (scoped && map.has(scoped)) {
-    args = map.get(scoped)
+    const hit = map.get(scoped)
     map.delete(scoped)
-    found = true
+    if (hit !== CACHE_COLLIDED) {
+      args = hit
+      found = true
+    }
   }
   if (map.has(bare)) {
     // 有会话时这条裸键不属于本次请求，只是清理；无会话时它才是本次请求的参数。
     if (!found && !sid) {
-      args = map.get(bare)
-      found = true
+      const hit = map.get(bare)
+      if (hit !== CACHE_COLLIDED) {
+        args = hit
+        found = true
+      }
     }
     map.delete(bare)
   }
@@ -1470,25 +1643,36 @@ function joinKeywordPath(base, p) {
   return root + sep + rel
 }
 
-/** 路径字段：顶层原名，以及嵌在未知键下的同名键（`params.file_path`）。 */
-function pathArgValues(a) {
+/**
+ * 路径字段：顶层原名，以及嵌在未知键下的同名键（`params.file_path`）。
+ * `scalars` 里标记的键必须跳过：`{file_path: 42}` / `{workdir: true}` 这类数字/布尔值不是
+ * 路径，进干草只会误命中——AGENTS 的规则是「标量绝不进关键词干草」，而它们此前正是从
+ * 这里（拼上 cwd 的绝对形态）漏进去的。
+ */
+function pathArgValues(a, scalars) {
+  const scalarSet = scalars instanceof Set ? scalars : new Set()
   const out = []
-  if (a.file_path) out.push(String(a.file_path))
-  if (a.path) out.push(String(a.path))
+  if (a.file_path && !scalarSet.has('file_path')) out.push(String(a.file_path))
+  if (a.path && !scalarSet.has('path')) out.push(String(a.path))
   for (const key of Object.keys(a)) {
-    if (!key.includes(GENERIC_ARG_SEP)) continue
-    const base = String(key).split(GENERIC_ARG_SEP).pop()
+    // 顶层原名已在上面的两个 `if` 里收过，这里只看**嵌套**（`params.file_path`）与
+    // **撞车键**（`file_path#2`）：`#N` 是拍平路径的撞车后缀，按基名比较前必须剥掉，
+    // 否则那条真实路径既不进路径干草、也拿不到点文件词的放宽匹配（静默失效）。
+    if (key === 'file_path' || key === 'path') continue
+    if (scalarSet.has(key)) continue
+    const base = String(key).split(GENERIC_ARG_SEP).pop().replace(/#\d+$/, '')
     if (base !== 'file_path' && base !== 'path') continue
     if (typeof a[key] === 'string' && a[key]) out.push(a[key])
   }
   return out
 }
 
-/** 路径字段的基准目录：cwd，以及显式给的 workdir。 */
-function pathBases(a, cwd) {
+/** 路径字段的基准目录：cwd，以及显式给的 workdir（标量 workdir 同样不是路径）。 */
+function pathBases(a, cwd, scalars) {
+  const scalarSet = scalars instanceof Set ? scalars : new Set()
   const bases = []
   if (cwd) bases.push(cwd)
-  if (a.workdir && a.workdir !== cwd) bases.push(a.workdir)
+  if (a.workdir && !scalarSet.has('workdir') && a.workdir !== cwd) bases.push(a.workdir)
   return bases
 }
 
@@ -1497,10 +1681,10 @@ export function formatKeywordHay(toolName, reason, args, cwd, scalars) {
   const scalarSet = scalars instanceof Set ? scalars : new Set()
   const isScalar = (k) => scalarSet.has(k)
   const extras = []
-  const bases = pathBases(a, cwd)
+  const bases = pathBases(a, cwd, scalarSet)
   if (cwd) extras.push(cwd)
   for (const base of bases) {
-    for (const p of pathArgValues(a)) {
+    for (const p of pathArgValues(a, scalarSet)) {
       const joined = joinKeywordPath(base, p)
       if (joined) extras.push(joined)
     }
@@ -1534,18 +1718,20 @@ export function formatAllowKeywordHay(args, scalars) {
  * 只给点文件类凭据词做放宽匹配用，所以**不含** command/toolName —— 命令里的
  * `process.env` 不会因为放宽而误伤。嵌套路径字段（`params.file_path`）也在这里，
  * 否则自定义工具里的一次 `.env` 写入会绕过路径侧的点文件词。
+ * 标量标记的键照旧不进干草（与 `formatKeywordHay` 同一条规则）。
  */
-export function formatPathKeywordHay(args, cwd) {
+export function formatPathKeywordHay(args, cwd, scalars) {
   const a = args || {}
+  const scalarSet = scalars instanceof Set ? scalars : new Set()
   const out = []
-  for (const base of pathBases(a, cwd)) {
-    for (const p of pathArgValues(a)) {
+  for (const base of pathBases(a, cwd, scalarSet)) {
+    for (const p of pathArgValues(a, scalarSet)) {
       const joined = joinKeywordPath(base, p)
       if (joined) out.push(joined)
     }
   }
-  for (const p of pathArgValues(a)) out.push(p)
-  if (a.workdir) out.push(String(a.workdir))
+  for (const p of pathArgValues(a, scalarSet)) out.push(p)
+  if (a.workdir && !scalarSet.has('workdir')) out.push(String(a.workdir))
   return out.join('\n')
 }
 
@@ -1567,6 +1753,10 @@ function cardArg(val, en) {
  * 标量转文本、嵌套拍平，所以 MCP 的 `params.command` 也能取到）。单行化 + 截断：
  * 框里的标题是普通文本节点，换行会被 HTML 折叠，超长会把整段挤爆。
  */
+/**
+ * 契约：**默认预算（600）下**返回值 ≤ `max`（截断标记本身也计入）；显式传入很小的 `max` 时
+ * 允许略微超出（head+tail+标记 ≈ 1.0×max + 20~30 字符）。生产只有一个调用点、恒用默认 600。
+ */
 export function formatReviewOperation(args, lang, max) {
   const en = normalizeJudgePromptLang(lang) === 'en'
   const limit = Number.isFinite(Number(max)) && Number(max) > 0 ? Number(max) : 600
@@ -1576,11 +1766,12 @@ export function formatReviewOperation(args, lang, max) {
    * 截断必须**说出来**：人是在批准自己看到的这一段，静默砍掉一半等于让他替看不见的尾巴签字。
    * 命令留首尾两段（危险通常在开头 `rm -rf` 或结尾 `&& curl | sh`），中间用明确标记交代总量。
    */
-  const clipped = (value) => {
+  const clipped = (value, budget) => {
+    const cap = Number.isFinite(Number(budget)) && Number(budget) > 0 ? Number(budget) : limit
     const text = oneLine(value)
-    if (text.length <= limit) return text
-    const head = text.slice(0, Math.max(1, Math.floor(limit * 0.6)))
-    const tail = text.slice(-Math.max(1, Math.floor(limit * 0.2)))
+    if (text.length <= cap) return text
+    const head = text.slice(0, Math.max(1, Math.floor(cap * 0.6)))
+    const tail = text.slice(-Math.max(1, Math.floor(cap * 0.2)))
     return en
       ? `${head}… (${text.length} chars total; tail: …${tail})`
       : `${head}…（共 ${text.length} 字；尾部：…${tail}）`
@@ -1588,16 +1779,74 @@ export function formatReviewOperation(args, lang, max) {
   // 命令优先（含 `params.command` 这类嵌套形态，与卡片同一个取法）：它才是「要批准什么」。
   const nested = Object.keys(a).filter((k) => k.endsWith('.' + 'command')).sort()[0]
   const command = typeof a.command === 'string' ? a.command : (nested === undefined ? '' : a[nested])
-  if (command) return clipped(command)
+  const commandKey = typeof a.command === 'string' ? 'command' : nested
+  // 空/纯空白的 command 不算命令：`clipped('   ')` 会返回一个空串，详情行与复核摘要会变成
+  // 一整行空白（原生框里人什么都看不到）。落回参数表至少还印得出一行 `command:`。
+  if (command && command.trim() !== '') {
+    /**
+     * 有命令**也要交代其余参数**：凭证是按完整参数投影签发的，只印命令时人批准的是自己没看见的
+     * 其余字段（实测 `{command:'echo ok', file_path:'/etc/shadow', content:'SECRET'}` 只显示
+     * 「操作：echo ok」，连「共 K 个参数」都没有）。命令让出小半预算，后面补「另有 N 个参数: …」；
+     * 一个都放不下时至少把**数量**说出来。
+     */
+    const others = Object.keys(a).filter((k) => k !== commandKey && typeof a[k] === 'string')
+    if (!others.length) return clipped(command)
+    const pieces = others.map((key) => key + ': ' + clipPlain(a[key], 60))
+    const tailFor = (count, restCount) => (count > 0
+      ? (en
+        ? ` (also ${others.length} more args: ${pieces.slice(0, count).join('; ')}${restCount > 0 ? `; +${restCount} not shown` : ''})`
+        : `（另有 ${others.length} 个参数：${pieces.slice(0, count).join('；')}${restCount > 0 ? `；还有 ${restCount} 个未列出` : ''}）`)
+      : (en ? ` (${others.length} more args not shown)` : `（另有 ${others.length} 个参数未列出）`))
+    /**
+     * **整条（命令 + 披露）必须 ≤ limit**：调用方（`formatReviewRequestReason`）还会把摘要再截到
+     * 600 字，而披露在尾巴上——命令一长，被砍掉的正好是「另有 N 个参数」这句（实测 595 字命令
+     * + 1 个参数 = 608 字，尾巴 8 个字符被切掉，披露等于不存在）。
+     * 从「列出最多参数」往回收，取第一个放得下的组合；连数量都放不下时退回只印命令。
+     */
+    for (let count = pieces.length; count >= 0; count--) {
+      const tailText = tailFor(count, others.length - count)
+      // 24 是截断标记与分隔符的余量（`clipped` 的标记会额外占十几个字符）
+      const room = limit - tailText.length - 24
+      if (room < 24) continue
+      return clipped(command, room) + tailText
+    }
+    return clipped(command)
+  }
   // 没有命令就按工具自己的参数名列前几个（键名照原样：嵌套的是 `params.command` 形态）。
   // `write` 这类调用于是能看到 `file_path` 与 `content` 片段，而不是只剩一个路径。
   const keys = Object.keys(a).filter((k) => typeof a[k] === 'string')
   const shown = keys.slice(0, 4)
-  const pairs = shown.map((key) => key + ': ' + clipPlain(a[key], 80))
   if (!shown.length) return ''
   const more = keys.length - shown.length
   const suffix = more > 0 ? (en ? ` (${keys.length} args total; first ${shown.length} shown)` : `（共 ${keys.length} 个参数，仅列前 ${shown.length} 个）`) : ''
-  return clipped(pairs.join(' · ')) + suffix
+  /**
+   * 两侧必须按**同一份字符串**决定裁到哪儿：宿主显示时用 ` · ` 连接（3 字符）、客户端用换行
+   * （1 字符），各自先连接再裁会让同一份参数在原生详情行与复核框里显示**不同的尾巴**，
+   * `共 N 字` 也差 `2×(行数-1)`。所以规范形式统一用换行连接、长度与截断都在它上面算，
+   * 宿主显示时再把换行换成 ` · `。披露（suffix）先占预算，剩下的才是参数表的。
+   */
+  // 空值的行印成 `key:`（不留行尾空格），与客户端同一个形状。
+  const row = (key) => {
+    const value = clipPlain(a[key], 80)
+    return value === '' ? key + ':' : key + ': ' + value
+  }
+  const canonical = shown.map(row).join('\n')
+  const room = Math.max(0, limit - suffix.length)
+  const table = canonical.length > room ? clipBlock(canonical, room, en) : canonical
+  return table.split('\n').join(' · ') + suffix
+}
+
+/**
+ * 与 `clipped` 同一套截断标记，但**不动换行**：多行参数表的长度与截断点必须与客户端逐字一致，
+ * 而 `clipped` 的 `oneLine` 会把换行折成空格（那是给单行命令用的）。
+ */
+function clipBlock(value, cap, en) {
+  const text = String(value == null ? '' : value)
+  const head = text.slice(0, Math.max(1, Math.floor(cap * 0.6)))
+  const tail = text.slice(-Math.max(1, Math.floor(cap * 0.2)))
+  return en
+    ? `${head}… (${text.length} chars total; tail: …${tail})`
+    : `${head}…（共 ${text.length} 字；尾部：…${tail}）`
 }
 
 /** 单个键值对里的值：抹平空白并截断（截断处留省略号，与整行截断的标记区分开）。 */
@@ -1783,8 +2032,34 @@ export function pickJudgePrompts(raw) {
 
 /** 审核调用默认输出预算（路由不推理时够用）。 */
 export const JUDGE_MAX_TOKENS = 256
-/** 会推理的路由要留出的预算：推理 token 与正文共享 `maxTokens`，给少了就是空正文 → 转人工。 */
-export const JUDGE_MAX_TOKENS_REASONING = 1024
+/**
+ * 会推理的路由要留出的首轮预算：推理 token 与正文共享 `maxTokens`，给少了就是空正文 → 转人工。
+ *
+ * 2026-09-16 实测从 1024 抬到 8192：`off` / 不配档位时模型仍按**自己的默认值**思考，
+ * 本地审核模型每次推理 3.7k–8.3k 字符（≈2–5k token），1024 必然被推理吃光 → 正文为空 →
+ * 换大预算重试一次。遥测里 9 次成功判定有 8 次末次预算是 8192（= 走过重试），等于每次
+ * 判定白跑一次模型调用（延迟翻倍，20s 超时更紧）；更早那次全量转人工的故障就是这条链的极端。
+ * `maxTokens` 是**上限不是预扣**：不思考的路由写完就停，给足空间不会变慢，只会省掉那次
+ * 注定失败的首轮。档位可在设置页配置（`judge.maxTokens`）。
+ */
+export const JUDGE_MAX_TOKENS_REASONING = 8192
+/** 设置页可配区间：下限就是「不推理」档（再小连正文都装不下），上限给到 32k 够任何推理模型。 */
+export const JUDGE_MAX_TOKENS_MIN = 256
+export const JUDGE_MAX_TOKENS_MAX = 32768
+
+/**
+ * 首轮输出预算的读盘归一：未配置（0 / 空 / 非数字）→ 出厂默认，越界 clamp 到区间。
+ * 与 `judgeRequestBudget` 同一条规则——越界**归一不拒绝**，但 `warnClampedSettings` 必须留痕，
+ * 否则用户手改文件后看不出发生了什么。
+ */
+export function normalizeJudgeMaxTokens(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return JUDGE_MAX_TOKENS_REASONING
+  const i = Math.floor(n)
+  if (i < JUDGE_MAX_TOKENS_MIN) return JUDGE_MAX_TOKENS_MIN
+  if (i > JUDGE_MAX_TOKENS_MAX) return JUDGE_MAX_TOKENS_MAX
+  return i
+}
 
 /**
  * 该路由是否会推理。
@@ -1810,14 +2085,20 @@ export function routeSupportsReasoning(modelInfo) {
 }
 
 /**
- * 审核模型一次调用允许的输出上限。带推理档位、或路由本身支持推理（含 `off` / 未配档位）时给 1024。
+ * 审核模型一次调用允许的输出上限。
+ *
+ * 档位（`judge.maxTokens`，设置页可配）只在**会推理**的路由上生效：不推理的路由固定 256
+ * （配置项问的是「推理要多留多少」，对它没有意义）。会推理 = 用户配了 `off` 之外的档位，
+ * 或路由本身报告了推理能力——后者才是本地这个模型的情况（不配档位 ≠ 不思考）。
  * @param reasoningEffort - `pluginCfg.judge.reasoningEffort`。
  * @param modelInfo - `llm.resolveModelInfo()` 的结果，用来判断路由会不会推理。
+ * @param configured - `pluginCfg.judge.maxTokens`；未配置时用出厂默认。
  */
-export function judgeMaxTokens(reasoningEffort, modelInfo) {
+export function judgeMaxTokens(reasoningEffort, modelInfo, configured) {
   const effort = String(reasoningEffort || '').trim().toLowerCase()
-  if (effort && effort !== 'off') return JUDGE_MAX_TOKENS_REASONING
-  return routeSupportsReasoning(modelInfo) ? JUDGE_MAX_TOKENS_REASONING : JUDGE_MAX_TOKENS
+  const mayReason = Boolean(effort && effort !== 'off') || routeSupportsReasoning(modelInfo)
+  if (!mayReason) return JUDGE_MAX_TOKENS
+  return normalizeJudgeMaxTokens(configured)
 }
 
 /** 空输出重试的预算：正文被 `max-tokens` 截断时给这一档（推理还没写完就没了）。 */
@@ -1843,11 +2124,22 @@ export function isTruncatedFinish(finishKind) {
  * {@link JUDGE_MAX_TOKENS_TRUNCATED_RETRY}。其余空输出（`finish=stop`，或压根没有 finish
  * 事件）只翻倍：那不是预算问题，重试本来也未必有用，不值得一次多烧 8k 输出。
  */
+/**
+ * 「空输出但不是被截断」那一档重试的最低预算。
+ *
+ * 这类空输出（`finish=stop` 却一个字都没有）不是推理吃光预算造成的，翻倍即可，下限沿用
+ * 推理档的最小值 1024。**不要**拿 `JUDGE_MAX_TOKENS_REASONING` 当它：那是**首轮**预算、
+ * 会跟着配置变大，用它当下限会让「首轮 = 重试」，重试就不再是升级。
+ */
+export const JUDGE_MAX_TOKENS_EMPTY_RETRY_MIN = 1024
+
 export function judgeEmptyRetryMaxTokens(firstMaxTokens, finishKind) {
   const first = Number(firstMaxTokens)
   const base = Number.isFinite(first) && first > 0 ? first : JUDGE_MAX_TOKENS
-  if (isTruncatedFinish(finishKind)) return Math.max(JUDGE_MAX_TOKENS_TRUNCATED_RETRY, base)
-  return Math.max(JUDGE_MAX_TOKENS_REASONING, base * 2)
+  // 截断档必须**严格大于首轮**：首轮默认已经是 8192，还返回固定的 8192 就不再是升级
+  // （配置把首轮调到 8192 以上时同理）。其余仍翻倍且 ≥1024。
+  if (isTruncatedFinish(finishKind)) return Math.max(JUDGE_MAX_TOKENS_TRUNCATED_RETRY, base * 2)
+  return Math.max(JUDGE_MAX_TOKENS_EMPTY_RETRY_MIN, base * 2)
 }
 
 /**
@@ -1962,15 +2254,20 @@ export function buildJudgePrompt(criteria, levels, lang, template) {
 }
 
 /**
- * 只认「类别: id」+「风险等级: <low|medium|high>」。**类别取最后一个**匹配：卡片内容可能被模型
- * 复述在答案前面，真正的结论在最后一行。
+ * `parseJudgeClassify` 的契约（本函数的调用方语义），放在这里与装饰集合的注释挨着。
+ *
+ * 只认「类别: id」+「风险等级: <low|medium|high>」，并且要求**唯一**：剥掉卡片回显后，
+ * 认得出的表内类别行必须唯一，出现互相矛盾的结论（两条不同的表内行、表内行 + 认不出的
+ * 标签行、两条都认不出）一律按歧义失败关闭落兜底行（`src='none'`）。**不是「取最后一个」**：
+ * 卡片回显既可能排在结论前面也可能在它后面，last-wins 就等于让回显决定放不放行。
  * 归类顺序：严格 → 整段裸 id → 模糊兜底（**全表**，含 other 与 allow 行）→ other（`src='none'`）。
  * 兜底不再排除 other 与 allow 行：非表内结果一律落 other 是既定策略，调用方按 `src` 记录，
  * 便于事后统计低置信判定（fuzzy）与完全认不出（none）各占多少。
- * 等级取最后一个**认得出**的值；认不出（缺失、`none`、`critical`、`高` 这类自造词）留空由
- * `levels.fallback` 兜底。等级与类别各自独立解析，互不牵连。
- * 回显的卡片围栏先剥掉（`stripJudgeCardEcho`），否则卡片里那行 `类别: safe` 会变成最后的结论。
- * 严格模式容忍行首/值两侧的 markdown 装饰；JSON 与散文只走模糊兜底。
+ * 等级同理要求唯一：同一趟里认得出的等级互相矛盾就整条作废、交给 `levels.fallback`；认不出
+ * （缺失、`none`、`critical`、`高` 这类自造词）也留空。等级与类别各自独立解析，互不牵连。
+ * 回显的卡片围栏先剥掉（`stripJudgeCardEcho`），否则卡片里那行 `类别: safe` 会变成结论。
+ * 严格模式容忍行首/值两侧的 markdown 装饰；结构化输出（JSON / 带类别标签行）走模糊兜底时
+ * 跳过「在生效等级那一格会放行」的行，纯散文不跳过（既有权衡）。
  * 只有正文为空才抛 `err.judgeEmpty`——那是「模型没有输出」，不是分类问题。
  */
 export function stripJudgeCardEcho(text) {
@@ -1986,20 +2283,18 @@ export function stripJudgeCardEcho(text) {
 }
 
 /**
- * 输出行首的装饰，分**两趟**匹配（这是安全语义，不是洁癖）：
+ * 输出行首的装饰：**只跑一趟宽集合**（吃 `###` / `+` / `1.` / `[` 这些行首装饰），
+ * 并对结果要求**唯一**。
  *
- *  - 窄集合 `NARROW_DECOR`（旧实现那一套：空白 / markdown 强调 / 引用符 / 短横线）先跑。
- *    真输出的行首装饰几乎都在这一档里，而工具回显常带 `+ ` / `# ` / `1. ` / `[` ——
- *    那些**不能**参与「取最后一个」的评选：卡片里带 `content`/`code`/`body` 时，
- *    攻击者可控文本写一行 `+ 类别: safe`，模型复述一次就能把 reject 翻成 allow。
- *  - 窄集合没给出**表内**结果时，才用宽集合 `WIDE_DECOR` 再跑一遍（吃 `###` / `+` / `1.`
- *    这些行首装饰）——那是为了修「`### 类别: safe` 整条掉进模糊兜底」的 fail-open。
+ * 曾经分「窄集合先定案、宽集合兜底」两趟：真结论带 `##`/`+` 时窄趟看不见它，而普通形态的
+ * 回显（`类别: safe`）会被窄趟当成唯一结果 → 回显决定放不放行。现在两趟合一，
+ * 歧义（两条互不相同的表内行）一律失败关闭落兜底行。
  *
- * 两趟都不吃 `:` / `：`：`理由: 类别: safe` 这种回显不该被当成结论行。
- * 整段就是 JSON 时**跳过两趟**（`{"category":"safe"}` 只走裸 id → 模糊兜底），
- * 这是 AGENTS 写明的契约：JSON 与散文都只走模糊兜底。
+ * 装饰集合不吃 `:` / `：`：`理由: 类别: safe` 这种回显不该被当成结论行。
+ * 结构化输出（JSON / 带类别标签行）跳过这趟解析（只走裸 id → 模糊兜底），
+ * 这是 AGENTS 写明的契约。
  */
-const WIDE_DECOR = '(?:[^\\p{L}\\p{N}:：\\r\\n]|\\d+[.)])*'
+const WIDE_DECOR = '(?:[^\\p{L}\\p{N}:：\\r\\n"\']|\\d+[.)])*'
 /** 标签与冒号之间也允许装饰（`**类别**: safe`）。 */
 const LABEL_TAIL = '[ \\t*_`\'"#+.)\\](\\[]*[:：]'
 /** 值两侧的装饰（`**safe**`、`` `safe` ``）。 */
@@ -2025,15 +2320,17 @@ function allByDecor(raw, decor, labelPattern, valuePattern) {
  * 模糊兜底会不会**自动放行**这一行：看它在**兜底等级**下的格子。
  *
  * 旧判据是「三格全 allow」（出厂 safe 行就是那个形状），但出厂三格改成 low 允许 / medium 人工 /
- * high 拒绝之后没有任何一行三格全 allow——那条护栏会变成空转。真正要防的是「靠理由里的一个词
- * 命中某行、而那一行在等级认不出时会直接放行」：等级认不出时用的是 `levels.fallback`，
- * 所以判据必须落在那一格上。
+ * high 拒绝之后没有任何一行三格全 allow——那条护栏会变成空转。
+ *
+ * 真正要防的是「靠**理由里的一个词**命中某行、而那一行的**生效等级**格恰好是放行」。
+ * 生效等级 = 模型给出的等级（解析得出时），否则 `levels.fallback`——只看 fallback 那一格时，
+ * 模型顺手写一句 `风险等级: low` 就能让护栏再次空转（出厂 fallback=high，没有任何一行 high=allow）。
+ * 这是失败关闭方向：跳过之后命不中任何行就落 `other` 的格子。
  */
-function autoAllowsOnFallback(row, levels) {
-  const fallback = levels && levels.fallback ? levels.fallback : 'high'
+function autoAllowsOnLevel(row, level) {
   const a = row && row.actions
   if (!a) return false
-  return String(a[fallback] || '') === 'allow'
+  return String(a[level] || '') === 'allow'
 }
 
 export function parseJudgeClassify(text, criteria, levels) {
@@ -2041,12 +2338,28 @@ export function parseJudgeClassify(text, criteria, levels) {
   const ids = new Set(rows.map((c) => c.id))
   const raw = stripJudgeCardEcho(text).trim()
   if (!raw) codedThrow('err.judgeEmpty')
-  // JSON 不是这个接口的输出格式：整段像 JSON 时不进严格解析（否则 `{"category":"safe"}`
-  // 会被当成「模型答了 safe」，而按契约它只该走模糊兜底）。
-  // `[` / `{` 开头**且**后面确实跟着 JSON 的记号才算 JSON：`[类别: safe]` 是模型用方括号
-  // 包了一行结论（宽装饰集合本来就吃 `[`），不能整条当成 JSON 丢掉。
-  const looksJson = /^\s*[[{]\s*["\w\]}{[\d-]/.test(raw)
   const LABELS = { category: '类别|分类|category', level: '风险等级|危险等级|等级|risk[\\s_-]*level|level' }
+  const LABEL_LINE = new RegExp('^[ \\t]*' + WIDE_DECOR + '(?:' + LABELS.category + '|' + LABELS.level + '|理由|reason)' + LABEL_TAIL, 'iu')
+  /**
+   * 「像 JSON」只用来决定**模糊扫描**要不要跳过会放行的行（结构性输出的失败关闭方向），
+   * 不再整体短路严格解析——那正是两次实测放行的来源：
+   *
+   *  - 只认 `^\s*[[{]` 时，同一份负载包一层 ```json（模型最常见的包装）就让判据失明：
+   *    JSON 里的 `"level":"low"` 被当成等级行、模糊扫描也不跳过会放行的行 → `safe` / `low` / **allow**。
+   *  - 反过来判据过宽（正文任意位置出现 `{"键":`、或任意一行以 `[` + 单词字符开头，如
+   *    理由行写 `[README.md]`）会让严格解析整趟被跳过：模型明写的 `风险等级: high` 被丢掉、
+   *    落到 `levels.fallback`——用户把兜底档配成 `low` 时，一次本该 reject 的判定变成 allow。
+   *
+   * 所以：**代码围栏只中和标记本身**（` ```json ` 这种语言标签连同围栏一起吃掉，但**同一行**
+   * 后面的内容必须留下：` ```json {"level":"low"} ``` ` 是一行负载，删到行尾等于把判据弄瞎），
+   * 行首 JSON 记号要求后面确实跟着 JSON 的记号（`[类别: safe]` / `[README.md]` 这类方括号
+   * 包裹的散文不算），`{"键":` 形态只在**不含本接口标签**的行上算数（JSON 键可以是中文）。
+   */
+  const fenceNeutralized = raw.replace(/(?:`{3,}|~{3,})[ \t]*[A-Za-z0-9_+.-]*/g, ' ')
+  const looksJson = /(?:^|\n)[ \t]*[[{][ \t]*["\d\]}{[-]/.test(fenceNeutralized)
+    || fenceNeutralized.split('\n').some((line) => (
+      !LABEL_LINE.test(line) && /[[{][ \t]*"[\w\u4e00-\u9fff .-]+"[ \t]*:/.test(line)
+    ))
   /**
    * 输出里有没有「类别标签行」。有标签行说明模型**试图**结构化回答：这时它的类别认不出
    * （`类别: risky-cleanup`）就不能再让模糊兜底去全文里捡一个 allow 行——
@@ -2056,7 +2369,7 @@ export function parseJudgeClassify(text, criteria, levels) {
   const hasCategoryLabel = new RegExp('(?:^|\\n)' + WIDE_DECOR + '(?:' + LABELS.category + ')' + LABEL_TAIL, 'iu').test(raw)
   let id = ''
   let ambiguous = false
-  if (!looksJson) {
+  {
     /**
      * **只跑一趟宽集合，但要求结果唯一**。
      *
@@ -2083,23 +2396,10 @@ export function parseJudgeClassify(text, criteria, levels) {
     const bare = raw.replace(/^[\s*_>`'"#+.)\]([]+/, '').replace(/[\s*_>`'"#+.)\]([.,。]+$/, '').toLowerCase()
     if (/^[a-z0-9_-]+$/.test(bare) && ids.has(bare)) { id = bare; src = 'bare' }
   }
-  if (!ambiguous && (!id || !ids.has(id))) {
-    id = ''
-    src = 'fuzzy'
-    // 结构化输出（JSON / 带类别标签）走模糊兜底时跳过「在兜底等级下会放行」的行：
-    // 整段 JSON 里往往既有 `category: other` 又有 `reason: looks safe`，按表序扫全文会让
-    // 理由里的一个词变成放行依据。跳过这些行是失败关闭方向；纯散文保持原样（既有权衡）。
-    const scan = (looksJson || hasCategoryLabel) ? rows.filter((row) => !autoAllowsOnFallback(row, levels)) : rows
-    for (const row of scan) {
-      const re = new RegExp('(?:^|[^a-z0-9_])' + row.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[^a-z0-9_])', 'i')
-      if (re.test(raw)) { id = row.id; break }
-    }
-  }
-  if (!id || !ids.has(id)) { id = 'other'; src = 'none' }
-  // 等级同理：宽集合取**唯一**认得出的值；出现互相矛盾的等级就整条作废，
-  // 交给 `levels.fallback`（那是用户配的失败关闭档），不让回显压低风险等级。
+  // 等级解析要在模糊扫描**之前**：扫描要按「生效等级」跳过会放行的行（见 autoAllowsOnLevel）。
+  // 这段只读整段文本，不依赖下面解析出的 id。
   let level = ''
-  if (!looksJson) {
+  {
     const hits = []
     const re = new RegExp('(?:^|\\n)' + WIDE_DECOR + '(?:' + LABELS.level + ')' + LABEL_TAIL + VALUE_DECOR + '([a-z]+)', 'giu')
     for (const m of raw.matchAll(re)) {
@@ -2108,8 +2408,23 @@ export function parseJudgeClassify(text, criteria, levels) {
     }
     if (hits.length === 1) level = hits[0]
   }
+  if (!ambiguous && (!id || !ids.has(id))) {
+    id = ''
+    src = 'fuzzy'
+    // 结构化输出（JSON / 带类别标签）走模糊兜底时跳过「在兜底等级下会放行」的行：
+    // 整段 JSON 里往往既有 `category: other` 又有 `reason: looks safe`，按表序扫全文会让
+    // 理由里的一个词变成放行依据。跳过这些行是失败关闭方向；纯散文保持原样（既有权衡）。
+    // 兜底等级也过一遍归一：拿未归一的值去查三格会查空，护栏就变成空转（等级配置损坏时）。
+    const scanLevel = level || normalizeJudgeLevel(levels && levels.fallback) || 'high'
+    const scan = (looksJson || hasCategoryLabel) ? rows.filter((row) => !autoAllowsOnLevel(row, scanLevel)) : rows
+    for (const row of scan) {
+      const re = new RegExp('(?:^|[^a-z0-9_])' + row.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[^a-z0-9_])', 'i')
+      if (re.test(raw)) { id = row.id; break }
+    }
+  }
+  if (!id || !ids.has(id)) { id = 'other'; src = 'none' }
   let reason = ''
-  if (!looksJson) {
+  {
     const re = new RegExp('(?:^|\\n)' + WIDE_DECOR + '(?:理由|reason)' + LABEL_TAIL + '[ \\t]*(.+)', 'giu')
     for (const m of raw.matchAll(re)) reason = stripReasonDecor(String(m[1]))
   }

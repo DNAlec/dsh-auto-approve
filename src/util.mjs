@@ -78,7 +78,14 @@ export function ensureDir(dir) {
 export function tryLoadJson(path) {
   try {
     if (!existsSync(path)) return { ok: true, missing: true, value: null }
-    return { ok: true, missing: false, value: JSON.parse(readFileSync(path, 'utf8')) }
+    const value = JSON.parse(readFileSync(path, 'utf8'))
+    // 合法 JSON 但**不是对象**（`null` / `[]` / `"text"` / `42`）不算一份配置：读盘侧必须把它
+    // 当「损坏」处理（调用方据此拒绝写盘）。否则 `null` 会被归一成默认值、再写回磁盘——
+    // 用户手写坏的内容被静默覆盖，沙箱还可能被默认值**放宽**（启动路径实测过）。
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, missing: false, error: new Error('not a JSON object'), value: null }
+    }
+    return { ok: true, missing: false, value }
   } catch (error) {
     return { ok: false, missing: false, error, value: null }
   }
@@ -94,8 +101,8 @@ export function loadJson(path, fallback) {
   return loaded.value
 }
 
-function chmodPrivate(path) {
-  try { chmodSync(path, 0o600) } catch { /* ignore */ }
+function chmodTo(path, mode) {
+  try { chmodSync(path, mode) } catch { /* ignore */ }
 }
 
 /**
@@ -104,13 +111,15 @@ function chmodPrivate(path) {
  * 写一半（进程被杀 / 磁盘满）会让 profile 解析失败、下次启动直接起不来。
  */
 export function writeAtomic(path, text, mode) {
+  // `mode` 是**显式**要求：给了就按它设权限，没给才收到 0600（配置文件可能含密钥/提示词）。
+  // 此前 rename 之后无条件 chmod 0600，`mode` 只在写临时文件时生效、随即被覆盖——参数等于没有效果。
   const tmp = path + '.tmp'
   try {
     ensureDir(dirname(path))
     if (mode != null) writeFileSync(tmp, text, { encoding: 'utf8', mode })
     else writeFileSync(tmp, text, 'utf8')
     renameSync(tmp, path)
-    chmodPrivate(path)
+    chmodTo(path, mode == null ? 0o600 : mode)
     return true
   } catch (error) {
     try { unlinkSync(tmp) } catch { /* ignore */ }
@@ -132,7 +141,7 @@ export function appendLine(path, line) {
   try {
     ensureDir(dirname(path))
     appendFileSync(path, line, 'utf8')
-    chmodPrivate(path)
+    chmodTo(path, 0o600)
     return true
   } catch (error) {
     // 审计行是超预算 / 撞护栏 / 没采集到这三类路径的**唯一证据**：
@@ -209,8 +218,27 @@ export function trimEventsFile(eventsPath, maxBytes = EVENTS_MAX_BYTES, keep = E
       console.error(`[${NAME}] ${eventsPath} 超过 ${maxBytes} 字节但没有一条可解析记录，本次不裁剪`)
       return false
     }
-    const kept = records.slice(-Math.max(1, keep))
-    const text = kept.length ? kept.map((r) => JSON.stringify(r)).join('\n') + '\n' : ''
+    /**
+     * 保留策略：**条数是上限，字节是目标**。
+     *
+     * 只按条数裁时 `maxBytes` 形同虚设：单条记录由 `EVENT_ARGS_BUDGET`（6000 字符）决定，
+     * 2000 条 ≈ 13MB——文件永远回不到 2MB 以下，而 `appendEvent` 每次都调这里，
+     * 于是每写一条事件就 readFileSync + 解析 2000 条 + 全量重写一次（实测 ~68ms/条），
+     * 变成自我维持的重写循环。从最新一条往前累加字节，超预算就停（至少留一条），
+     * 条数上限照旧生效。
+     */
+    const lines = records.map((r) => JSON.stringify(r))
+    const kept = []
+    let bytes = 0
+    for (let i = lines.length - 1; i >= 0 && kept.length < Math.max(1, keep); i--) {
+      const size = lines[i].length + 1
+      // 至少留一条（最后一条事件是「刚才发生了什么」的唯一现场）：它自己超预算也要留。
+      if (kept.length && bytes + size > maxBytes) break
+      kept.push(lines[i])
+      bytes += size
+    }
+    kept.reverse()
+    const text = kept.length ? kept.join('\n') + '\n' : ''
     writeAtomic(eventsPath, text)
     eventsCache = null
     return true
@@ -222,7 +250,8 @@ export function trimEventsFile(eventsPath, maxBytes = EVENTS_MAX_BYTES, keep = E
 export function appendEvent(eventsPath, ev) {
   ensureDir(dirname(eventsPath))
   appendFileSync(eventsPath, JSON.stringify(ev) + '\n', 'utf8')
-  chmodPrivate(eventsPath)
+  // 事件里也可能有命令片段，同样收到 0600。
+  chmodTo(eventsPath, 0o600)
   eventsCache = null
   trimEventsFile(eventsPath)
 }

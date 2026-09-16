@@ -13,21 +13,37 @@ import { dirname, join } from 'node:path'
 import { autoApprovePresetYaml, FULL_PERMISSION_BLOCK, normalizePresetSandbox } from './rules.mjs'
 import { writeAtomic } from './util.mjs'
 
-/**
- * auto-approve 预设键：必须缩进（`presets:` 下的子键）。
- *
- * 键可以带引号（`'auto-approve':`）、冒号前可以有空格；值可以为空、行尾注释
- * （`auto-approve:   # ours`）或行内 flow 值（`auto-approve: {…}`）——**这些都算「键已存在」**：
- * 认不出来就会再插一份，同一 mapping 里两个同名键，DSH 的 `yaml.load` 直接抛
- * `duplicated mapping key` / `Map keys must be unique` → profile 起不来。
- */
-const AUTO_APPROVE_KEY = /^([ \t]+)(['"]?)auto-approve\2[ \t]*:(.*)\r?$/
 /** permission 行：顶层 `- id: permission`，或 `insert:` 下的缩进形式；允许引号 id 与行尾注释。 */
 const PERMISSION_ROW = /^([ \t]*)- id:[ \t]*(['"]?)permission\2(?:[ \t]+#.*)?[ \t]*\r?$/
-/** 块内 sandbox 行：保留前缀缩进与行尾，只换值。值不吃 `,`/`{}`（flow 形态的条目分隔符）。 */
-const SANDBOX_LINE = /^([ \t]+sandbox:[ \t]*)([^\s,{}]+?)([ \t]*\r?)$/
+/** 块内 sandbox 行：保留前缀缩进与行尾，只换值。值不吃 `,`/`{}`（flow 形态的条目分隔符）；允许引号键与行尾注释。 */
+const SANDBOX_LINE = /^([ \t]+(?:['"])?sandbox(?:['"])?[ \t]*:[ \t]*)([^\s,{}]+?)((?:[ \t]*#.*)?[ \t]*\r?)$/
 /** 空数组字面量行，允许行尾注释（`[] # empty`）。 */
 const EMPTY_ARRAY_LINE = /^[ \t]*\[\][ \t]*(?:#.*)?\r?$/
+/** 单行空数组的**全部**写法：`[]`、`[ ]`（YAML 里都是合法空序列）。 */
+const EMPTY_ARRAY_LINE_LOOSE = /^[ \t]*\[[ \t]*\][ \t]*(?:#.*)?\r?$/
+/** 折行的空数组：`[` 单独一行、下一行只有 `]`。 */
+const FLOW_SEQ_OPEN_LINE = /^[ \t]*\[[ \t]*(?:#.*)?\r?$/
+const FLOW_SEQ_CLOSE_LINE = /^[ \t]*\][ \t]*(?:#.*)?\r?$/
+/**
+ * 空数组字面量占用的行号集合。
+ *
+ * **为什么不只认裸 `[]`**：`[ ]` 和「`[` 换行 `]`」在 YAML 里同样是空序列，用户手改一下就长这样。
+ * 只识别裸 `[]` 时它们会被当成「有内容的 patch」，于是往后面追加条目 → 拼出
+ * 「flow 序列 + 块序列」的非法 YAML → DSH `yaml.load` 抛 `Unexpected seq-item-ind`、
+ * `dsh web` 起不来，而这条路的自检还会报成功。
+ */
+function emptyArrayLines(lines) {
+  const out = new Set()
+  for (let i = 0; i < lines.length; i++) {
+    if (EMPTY_ARRAY_LINE_LOOSE.test(lines[i])) { out.add(i); continue }
+    if (FLOW_SEQ_OPEN_LINE.test(lines[i]) && i + 1 < lines.length && FLOW_SEQ_CLOSE_LINE.test(lines[i + 1])) {
+      out.add(i)
+      out.add(i + 1)
+      i += 1
+    }
+  }
+  return out
+}
 /** YAML 文档标记行：结构行，不算「有内容」。 */
 const DOC_MARKER_LINE = /^[ \t]*(?:---|\.\.\.)[ \t]*(?:#.*)?\r?$/
 /**
@@ -45,6 +61,42 @@ const BLOCK_SCALAR_HEADER = /(?:^|:)[ \t]*(?:-[ \t]+)?[|>](?:[+-]?\d*|\d*[+-]?)?
  * 引号 / flow / 锚点 / 标签开头的值不算（它们不会把下面的行吃进标量里）。
  */
 const PLAIN_SCALAR_HEAD = /^([ \t]*)(?:(-[ \t]+))?([^\s#][^:]*):[ \t]+([^'"{}[\]*&!|>%@#\s][^\r\n]*)\r?$/
+/**
+ * **引号**标量的头：`key: "第一行` / `key: '第一行`（本行内没闭合）。
+ *
+ * 引号标量可以跨行，而它的续行**允许与键同缩进**（js-yaml 实测：续行只需比**
+ * 所属 mapping**更深，不比键更深）：
+ *
+ * ```yaml
+ * presets:
+ *   mine: "第一行
+ *   auto-approve:      ← 这是标量正文，不是键
+ *   说明"
+ * ```
+ *
+ * 只认块标量与无引号多行标量时，续行里的 `auto-approve:` 会被当成真键 →
+ * `configured=true` / `ensure` 报 `already` → 预设永不安装，而设置页在
+ * `configured=true` 时**不渲染**「写入权限预设」按钮，用户没有任何补救入口。
+ * @returns {{ indent: number, quote: string } | null}
+ */
+function quotedScalarHead(line) {
+  const m = /^([ \t]*)(-[ \t]+)?([^\s#][^:]*):[ \t]*(["'])/.exec(line)
+  if (!m) return null
+  const quote = m[4]
+  if (quoteClosesIn(line.slice(m[0].length), quote)) return null
+  return { indent: m[1].length + (m[2] ? m[2].length : 0), quote }
+}
+
+/** 这段文本里有没有**未转义**的闭合引号（双引号里 `\"`、单引号里 `''` 都不算闭合）。 */
+function quoteClosesIn(text, quote) {
+  for (let i = 0; i < text.length; i++) {
+    if (quote === '"' && text[i] === '\\') { i += 1; continue }
+    if (text[i] !== quote) continue
+    if (quote === "'" && text[i + 1] === "'") { i += 1; continue }
+    return true
+  }
+  return false
+}
 
 function indentOf(line) {
   return (String(line || '').match(/^[ \t]*/) || [''])[0].length
@@ -62,22 +114,75 @@ function indentOf(line) {
  */
 function scalarBodyLines(lines) {
   const body = new Set()
-  let headIndent = null
+  // `head.quoted` 的续行判据是 `>=`（引号标量允许与键同缩进，只要求比所属 mapping 深），
+  // 块标量与无引号标量是 `>`（必须比键更深）。引号标量在闭合引号那一行结束。
+  let head = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (headIndent !== null) {
+    if (head !== null) {
       if (line.trim() === '') { body.add(i); continue }
-      if (indentOf(line) > headIndent) { body.add(i); continue }
-      headIndent = null
+      const indent = indentOf(line)
+      const inScalar = head.quoted ? indent >= head.indent : indent > head.indent
+      if (inScalar) {
+        body.add(i)
+        if (head.quoted && quoteClosesIn(line, head.quote)) head = null
+        continue
+      }
+      head = null
     }
     if (BLOCK_SCALAR_HEADER.test(line)) {
-      headIndent = indentOf(line)
+      head = { indent: indentOf(line), quoted: false }
+      continue
+    }
+    const quoted = quotedScalarHead(line)
+    if (quoted) {
+      head = { indent: quoted.indent, quoted: true, quote: quoted.quote }
       continue
     }
     const plain = PLAIN_SCALAR_HEAD.exec(line)
-    if (plain) headIndent = plain[1].length + (plain[2] ? plain[2].length : 0)
+    if (plain) head = { indent: plain[1].length + (plain[2] ? plain[2].length : 0), quoted: false }
   }
   return body
+}
+
+/**
+ * 一行作为**键行**的键名（`:` 之前那一段，去两侧引号）；不是键行返回 `''`。
+ *
+ * 检测（`findAutoApproveKey`）、抽取（`extractPresetKeysFromPatchText`）与写入侧
+ * （`directChildIndent`）三处必须共用同一个判据：曾经检测侧用 `/:/`「猜键」、
+ * 写入侧用另一套正则，于是 presets 块里一条更深缩进、带 ASCII 冒号的注释就能让
+ * 检测算出错误的 childIndent（`configured=false` + `ensure` 因自检数到 2 条而永久拒写，
+ * 而 DSH 里那个预设其实生效）。
+ *
+ * **故意不剥 `- `/`? `/标签 `!!str` /锚点 `&a`**：那些写法在 js-yaml 里根本解析不了
+ * （实测 `!!str auto-approve:` 报 `bad indentation of a mapping entry`），把它们当成
+ * 「已配置」等于对一份坏文件说 ok。它们的键名自然不等于 `auto-approve`，于是走插入路径、
+ * 由 `hasUnrecognizedKeyForm` 拒绝写盘（报错、文件不动）——这是既定取舍。
+ */
+function childKeyName(line) {
+  const s = String(line || '').trim()
+  if (s === '' || s.startsWith('#')) return ''
+  if (/^[{[\]}]/.test(s)) return ''
+  const colon = s.indexOf(':')
+  if (colon <= 0) return ''
+  const keyPart = unquote(s.slice(0, colon).trim()).trim()
+  return keyPart
+}
+
+/**
+ * presets 块里**直接子键**的缩进：第一个真键行的缩进；拿不到就按惯例 `indent + 2`。
+ * 检测、抽取、写入三处共用（见 `childKeyName`）。
+ */
+function directChildIndent(lines, parent) {
+  const body = scalarBodyLines(lines)
+  for (let i = parent.line + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    if (indentOf(line) <= parent.indent) break
+    if (body.has(i)) continue
+    if (childKeyName(line) !== '') return indentOf(line)
+  }
+  return parent.indent + 2
 }
 
 /** 去掉行首 BOM：`\uFEFF[]` 会让每个「这行是什么」的判定全体错位（Windows 编辑器常见）。 */
@@ -93,12 +198,41 @@ export function stripDocumentMarkers(text) {
     .join('\n')
 }
 
-/** 找所有 permission 行（顶层或 insert 里的缩进形式）。 */
+/**
+ * 这一行是不是**patch 条目**（而不是别的插件 config 里的一个列表项）。
+ *
+ * DSH 的 `parsePatchList` 只把顶层序列项当条目，`applyEntryPatches` 也只对 `entry.group`
+ * （即 `insert:`）的 config 递归。所以：列 0 的序列项是条目；缩进的序列项只有在最近的
+ * 更浅一行是 `- insert:` 时才是条目。`- id: other-plugin / config: / items: / - id: permission`
+ * 这种嵌套列表项**不是**条目——把它当成 permission 行会让插件报 `configured=true`/`already`，
+ * 而 DSH 里根本没有这条 permission 条目（用户也就永远看不到补救按钮）。
+ */
+function isPatchEntryLine(lines, index, body) {
+  const indent = indentOf(lines[index])
+  if (indent === 0) return true
+  for (let i = index - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (line.trim() === '' || line.trim().startsWith('#')) continue
+    if (body.has(i)) continue
+    if (indentOf(line) >= indent) continue
+    // 父行是普通键（`items:` / `inject:` / `config:` …）→ 它只是别人 config 里的列表项，不是条目。
+    if (!/^[ \t]*-([ \t]|$)/.test(line)) return false
+    // 父行是序列项：必须是**根级**条目（列 0，含单独的 `-`）或 `- insert:` 里的条目；
+    // 别人 config 里更深一层的列表项（`list:` 下面缩进的 `- thing: x`）不算。
+    return indentOf(line) === 0 || /^[ \t]*-[ \t]*insert[ \t]*:/.test(line)
+  }
+  return false
+}
+
+/** 找所有 permission 行（列 0 的条目，或 `- insert:` 里缩进的条目）。 */
 function findPermissionRows(lines) {
   const out = []
+  const body = scalarBodyLines(lines)
   for (let i = 0; i < lines.length; i++) {
     const m = PERMISSION_ROW.exec(lines[i])
-    if (m) out.push({ line: i, indent: m[1].length })
+    if (!m) continue
+    if (!isPatchEntryLine(lines, i, body)) continue
+    out.push({ line: i, indent: m[1].length })
   }
   return out
 }
@@ -180,27 +314,31 @@ export function extractPresetKeysFromPatchText(text) {
   const lines = stripBom(text).split('\n')
   // 标量正文里的同名行不是键（`description: |` 里写一句 `read-only:` 会造成假的漂移告警）。
   const body = scalarBodyLines(lines)
-  for (const row of findPermissionRows(lines)) {
-    const presets = findPermissionPresets(lines, [row]).presets
-    if (!presets) continue
-    const keys = []
-    // 直接子键的缩进 = 这个块里第一个键行的缩进（用户可以用 4 空格，写死 +2 会漏）。
-    let childIndent = null
-    for (let i = presets.line + 1; i < lines.length; i++) {
-      const line = lines[i]
-      if (line.trim() === '' || line.trim().startsWith('#')) continue
-      const indent = indentOf(line)
-      if (indent <= presets.indent) break
-      if (body.has(i)) continue
-      const m = /^[ \t]*(['"]?)([A-Za-z0-9._-]+)\1[ \t]*:/.exec(line)
-      if (!m) continue
-      if (childIndent === null) childIndent = indent
-      if (indent !== childIndent) continue
-      keys.push(m[2])
-    }
-    return keys
+  /**
+   * **必须与写入/检测同一套目标**：DSH 按顺序应用 patch，同 id 后写的 `config` 整块覆盖
+   * 前一条，所以生效的是**最后一条带 config 的 permission 行**。取第一条时，
+   * 「被覆盖的那一行有完整出厂表、生效行只剩一个自定义预设」这种文件会算出
+   * `missing=[]` → 漂移告警与设置页卡片双双静默，而用户的生效表已经丢掉了全部出厂预设。
+   */
+  const { presets } = findPermissionPresets(lines, findPermissionRows(lines))
+  if (!presets) return null
+  const childIndent = directChildIndent(lines, presets)
+  const keys = []
+  for (let i = presets.line + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const indent = indentOf(line)
+    if (indent <= presets.indent) break
+    if (body.has(i)) continue
+    if (indent !== childIndent) continue
+    // 键名用「`:` 之前那一段」判定，**不设字符集**：中文/空格/点号都是合法的 YAML 键，
+    // 固定字符集会把中文键漏掉，于是 `childIndent` 被更深一层的 `sandbox:` 占位，
+    // 预设表与漂移提示同时错。
+    const name = childKeyName(line)
+    if (name === '') continue
+    keys.push(name)
   }
-  return null
+  return keys
 }
 
 /**
@@ -260,7 +398,6 @@ export function presetDrift(baseKeys, ourKeys) {
  */
 export function findAutoApproveKey(text) {
   const lines = stripBom(text).split('\n')
-  const body = scalarBodyLines(lines)
   /**
    * **只找生效行**（`findPermissionPresets` 选中的最后一条带 config 的 permission 行）里的键。
    * 扫全部行会让「键只存在于被覆盖的那一行」被判成「已配置」——`ensureAutoApprovePreset`
@@ -269,7 +406,11 @@ export function findAutoApproveKey(text) {
    */
   const { presets } = findPermissionPresets(lines, findPermissionRows(lines))
   if (!presets) return null
-  let childIndent = null
+  // 直接子键的缩进与键名判据必须与抽取/写入侧共用（见 `childKeyName` / `directChildIndent`）：
+  // 检测侧自己「猜键」（任何含 ASCII 冒号的行）时，一条更深缩进的注释就能让它算错缩进，
+  // 结果是「DSH 里预设生效、插件说未配置」，而且再也写不进去（自检会数到 2 条键）。
+  const childIndent = directChildIndent(lines, presets)
+  const body = scalarBodyLines(lines)
   for (let i = presets.line + 1; i < lines.length; i++) {
     const line = lines[i]
     if (line.trim() === '') continue
@@ -277,14 +418,11 @@ export function findAutoApproveKey(text) {
     if (indent <= presets.indent) break
     // 标量正文里的同名行不是键：认了它 = 预设永远不装、UI 还说「已配置」。
     if (body.has(i)) continue
-    const m = AUTO_APPROVE_KEY.exec(line)
-    if (!m) {
-      if (childIndent === null && /:/.test(line)) childIndent = indent
-      continue
-    }
-    if (childIndent === null) childIndent = indent
     if (indent !== childIndent) continue
-    return { line: i, indent, inline: String(m[3] || '').trim() !== '' }
+    if (childKeyName(line) !== 'auto-approve') continue
+    const colon = line.indexOf(':')
+    // 行内值（flow / 注释）也算「键已存在」：`auto-approve:   # ours` 与 `{…}` 都算。
+    return { line: i, indent, inline: stripTrailingComment(line.slice(colon + 1)).trim() !== '' }
   }
   return null
 }
@@ -302,10 +440,13 @@ export function hasAutoApprovePreset(text) {
  * （Windows 编辑器另存就长这样）。
  */
 export function isPatchArrayEmpty(text) {
-  for (const line of stripBom(text).split('\n')) {
-    const trimmed = line.trim()
+  const lines = stripBom(text).split('\n')
+  const empty = emptyArrayLines(lines)
+  for (let i = 0; i < lines.length; i++) {
+    if (empty.has(i)) continue
+    const trimmed = lines[i].trim()
     if (!trimmed || trimmed.startsWith('#')) continue
-    if (DOC_MARKER_LINE.test(line) || EMPTY_ARRAY_LINE.test(line)) continue
+    if (DOC_MARKER_LINE.test(lines[i])) continue
     return false
   }
   return true
@@ -323,9 +464,10 @@ export function composePatchText(text, block) {
   if (isPatchArrayEmpty(src)) {
     // **所有** `[]` 行都要删掉（`[]\n[]\n` 也等价于空 patch）：只删第一个会拼出
     // `[]` 后面还有条目的 YAML，DSH 的 parsePatchList 直接抛错（profile 起不来）。
-    const head = src
-      .split('\n')
-      .filter((line) => !EMPTY_ARRAY_LINE.test(line))
+    const lines = src.split('\n')
+    const empty = emptyArrayLines(lines)
+    const head = lines
+      .filter((line, i) => !empty.has(i))
       .join('\n')
       .replace(/\s*$/, '')
     return (head ? head + '\n' : '') + tail + '\n'
@@ -350,8 +492,15 @@ function presetsHasChildren(lines, presets) {
 export function getSetupState(patchPath) {
   try {
     const text = stripBom(readFileSync(patchPath, 'utf8'))
+    /**
+     * 有「认不出的 permission 行」时报 `configured: false`：那条行可能排在后面把这一整块盖掉
+     * （DSH 同 id 后者胜、config 整块赋值），此时说「已配置」会让设置页隐藏唯一的补救按钮。
+     * 宁可让用户点一次「写入」看到明确报错（`unrecognized-id-form` 会告诉他手工改哪一行）。
+     */
+    const badRow = unrecognizedPermissionRowError(text.split('\n'))
     return {
-      configured: hasAutoApprovePreset(text),
+      configured: !badRow && hasAutoApprovePreset(text),
+      unrecognizedRow: Boolean(badRow),
       patchPath,
       sandbox: readAutoApproveSandboxFromText(text),
       presets: extractPresetKeysFromPatchText(text) || [],
@@ -371,7 +520,7 @@ export function readAutoApproveSandbox(patchPath) {
 
 /**
  * 行内 flow mapping 形态（`auto-approve: { sandbox: read-only, approval: ask }`）。
- * 单行 flow 值也是「键已存在」（见 `AUTO_APPROVE_KEY`），所以 sandbox 的读写必须认它，
+ * 单行 flow 值也是「键已存在」（见 `findAutoApproveKey`），所以 sandbox 的读写必须认它，
  * 否则设置页会显示「已配置」但每次点模式都报「没有 sandbox 行」——而 sandbox 明明在里面。
  *
  * 匹配前先切掉行尾注释：`auto-approve: { approval: ask } # sandbox: read-only` 里的
@@ -409,6 +558,33 @@ function flowClosed(line) {
   return value.lastIndexOf(close) > 0
 }
 
+/**
+ * auto-approve 块里的**直接子键** `sandbox:` 行。
+ *
+ * 判据必须与 `findAutoApproveKey` 同级：只看这个块的第一层子键、且跳过标量正文。
+ * 只看「缩进 + `sandbox:`」时，更深一层的 `args.sandbox:`、或块标量正文里的一行
+ * `sandbox:` 都会被当成目标——插件报 ok/updated，而 DSH 生效的 auto-approve 里根本没有
+ * sandbox（schema 里它是必填），读取还会把用户正文里的字符串当成模式。找不到就返回 null，
+ * 由调用方报 `err.presetSandboxMissing`（AGENTS 要求的落点）。
+ * @returns {{ line: number, match: RegExpExecArray } | null}
+ */
+function findSandboxLine(lines, key) {
+  const body = scalarBodyLines(lines)
+  const childIndent = directChildIndent(lines, key)
+  for (let i = key.line + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const indent = indentOf(line)
+    if (indent <= key.indent) break
+    if (body.has(i)) continue
+    if (indent !== childIndent) continue
+    if (childKeyName(line) !== 'sandbox') continue
+    const m = SANDBOX_LINE.exec(line)
+    if (m) return { line: i, match: m }
+  }
+  return null
+}
+
 /** 读 auto-approve 块里的 sandbox 原值（不规范化，UI 要看到真实围栏）。 */
 export function readAutoApproveSandboxFromText(text) {
   const src = String(text || '')
@@ -420,13 +596,9 @@ export function readAutoApproveSandboxFromText(text) {
   if (closed === false) return '' // 多行 flow：本插件不解析（改写路径会明确报错）
   const flow = matchFlowSandbox(keyLine.slice(keyLine.indexOf('auto-approve:') + 'auto-approve:'.length))
   if (flow) return unquote(flow[2])
-  for (let i = key.line + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() !== '' && indentOf(line) <= key.indent) break
-    const m = SANDBOX_LINE.exec(line)
-    if (m) return m[2]
-  }
-  return ''
+  const hit = findSandboxLine(lines, key)
+  // 块状值同样可能带引号：读回来必须是真值，否则「同一个值」会被判成需要改写（误报「已写入」）。
+  return hit ? unquote(hit.match[2]) : ''
 }
 
 /**
@@ -453,16 +625,13 @@ export function replaceAutoApproveSandbox(text, sandbox) {
     lines[key.line] = lines[key.line].slice(0, at) + mode + lines[key.line].slice(at + raw.length)
     return { text: lines.join('\n'), changed: true, found: true }
   }
-  for (let i = key.line + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() !== '' && indentOf(line) <= key.indent) break
-    const m = SANDBOX_LINE.exec(line)
-    if (!m) continue
-    if (m[2] === mode) return { text: src, changed: false, found: true }
-    lines[i] = m[1] + mode + m[3]
-    return { text: lines.join('\n'), changed: true, found: true }
-  }
-  return { text: src, changed: false, found: false }
+  const hit = findSandboxLine(lines, key)
+  if (!hit) return { text: src, changed: false, found: false }
+  // 值可能是引号形式（`sandbox: "workspace-write"`）：比较前必须去引号，否则同一个值
+  // 会被判成「需要改写」，设置页于是显示「已写入，请重启」而内容其实没变。
+  if (unquote(hit.match[2]) === mode) return { text: src, changed: false, found: true }
+  lines[hit.line] = hit.match[1] + mode + hit.match[3]
+  return { text: lines.join('\n'), changed: true, found: true }
 }
 
 /**
@@ -481,19 +650,6 @@ function shippedPresetsBlock(sandbox, delta) {
 }
 
 
-/**
- * presets 块里直接子键的缩进：取第一个键行的缩进（用户可以用 4 空格），
- * 拿不到就按惯例 `presets.indent + 2`。
- */
-function autoApproveChildIndent(lines, presets) {
-  for (let i = presets.line + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() === '' || line.trim().startsWith('#')) continue
-    if (indentOf(line) <= presets.indent) break
-    if (/:/.test(line)) return indentOf(line)
-  }
-  return presets.indent + 2
-}
 
 /**
  * 数一数**看起来像 auto-approve 键**的行（引号/空格/行内值都算，排除标量正文）。
@@ -604,6 +760,84 @@ function finishPresetInsert(patchPath, after, status, presetsLine, presetsIndent
 }
 
 /**
+ * 这一行是不是「认不出的 permission 行写法」：行里有一个 `id` 键，它的值去掉标签/锚点前缀、
+ * 两侧引号、行尾注释与 `\uXXXX`／`\xXX` 转义之后等于 `permission`。
+ *
+ * 判据故意放宽（宁可误拒）：块状正则认不出的拼写（`- id: !!str permission`、
+ * `- id: "\u0070ermission"`、折行的 `- {id: permission, …}`、多行序列项里的 `id: permission`）
+ * 一律不写盘——追加第二条同 id 的 permission 行时，DSH 里后写的 `config` **整块覆盖**前一条，
+ * 用户自带的 presets 静默消失，而 RPC 报成功。
+ */
+function mentionsPermissionId(line, anchored) {
+  const m = (anchored
+    // 键行：`id` 必须是**这一行的键**（`inject: [{id: permission}]` 里那个只是别的键的值，
+    // 不是 patch 条目的 id）。
+    ? /^[ \t]*(?:-[ \t]*)?['"]?id['"]?[ \t]*:[ \t]*(.*)$/
+    // 序列项：整行（含 flow mapping）就是这位条目本身，`{config: …, id: permission}` 也算。
+    : /(^|[\s{[,])['"]?id['"]?[ \t]*:[ \t]*(.*)$/
+  ).exec(String(line || ''))
+  if (!m) return false
+  const valueIndex = m.length - 1
+  let value = String(m[valueIndex] || '').trim()
+  value = value.replace(/[ \t]+#.*$/, '').trim()   // 行尾注释
+  value = value.replace(/[,}\]].*$/, '').trim()    // flow 里的值结束符
+  value = value.replace(/^![^\s]*[ \t]*/, '')      // 标签 `!!str`
+  value = value.replace(/^&[^\s]*[ \t]*/, '')      // 锚点
+  return decodeYamlEscapes(unquote(value.trim())) === 'permission'
+}
+
+/** `\uXXXX` / `\xXX` / `\UXXXXXXXX` 解码：`"\u0070ermission"` 也是 permission 行。 */
+function decodeYamlEscapes(text) {
+  return String(text || '').replace(/\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|U([0-9a-fA-F]{8}))/g, (all, u, x, big) => {
+    const cp = parseInt(u || x || big, 16)
+    return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : all
+  })
+}
+
+/**
+ * 这一行是不是**某个 patch 条目**里认不出的 permission 行。
+ *
+ * 只看 `mentionsPermissionId` 会把「别的插件 config 里恰好有个 `id: permission` 键」这种
+ * 与 permission 行无关的合法文件判成拒写（错误文案还说「拒绝追加第二行」，是假话）。
+ *
+ * 判据：① 这一行**本身是序列项**（`- id: …` / `- {id: …}`，**任何缩进**都算——`insert:` /
+ * `config:` 列表里缩进的条目同样是 patch 条目）；② 或者它是**某个条目的键**——沿最近的更浅
+ * 缩进行往上找，那一行是序列项就说明它在条目里（`-` 单独一行、后面 `name: x` + `id: permission`
+ * 也算条目，不能再要求「id 必须是第一个键」）。父行是普通 mapping 键（`thing:` / `config:`）
+ * 时它只是别人 config 里的一个键，放行。
+ */
+function mentionsPermissionRow(lines, index, body) {
+  if (body.has(index)) return false
+  const line = lines[index]
+  // 序列项：整行（含 flow mapping）就是这位条目本身；普通键行：只有 `id` **是这一行的键**才算
+  // （`inject: [{id: permission, …}]` 里那个只是依赖注入列表里的一个值，不是 patch 条目）。
+  if (!mentionsPermissionId(line, !/^[ \t]*-([ \t]|$)/.test(line))) return false
+  // 「在不在 patch 条目里」与找行用**同一套**上下文判据。
+  return isPatchEntryLine(lines, index, body)
+}
+
+/**
+ * 全文扫「认不出的 permission 行」：返回 details 或 null。
+ *
+ * 同 id 的两条 patch 里**后写的 config 整块覆盖**前一条——所以只要存在一条插件认不出的
+ * permission 行（标签/转义/`-` 单独一行的序列项…），**任何**路径都不能报 already/ok：
+ * 它可能排在后面把我们的块整块盖掉（实测：前一条正常、后一条 `- id: !!str permission` 时，
+ * `ensure` 报 already/ok 而 DSH 生效的 presets 里根本没有 auto-approve——UI 于是连补救按钮
+ * 都不渲染）。判据收在写盘之前，逐条打印给用户看。
+ */
+function unrecognizedPermissionRowError(lines) {
+  const body = scalarBodyLines(lines)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '' || /^[ \t]*#/.test(line)) continue
+    if (PERMISSION_ROW.test(line)) continue
+    if (!mentionsPermissionRow(lines, i, body)) continue
+    return { error: 'unrecognized permission row spelling; refusing to write because DSH would let it override this entry' }
+  }
+  return null
+}
+
+/**
  * 空 patch / 追加整块：这条路上没有可用的 presets 块范围，改为检查
  * 「有没有认不出的 permission 行」——同 id 的两条 patch 里后写的 config 会**整块覆盖**
  * 前一条，静默丢掉用户自己的 presets。
@@ -620,21 +854,13 @@ function writeComposed(patchPath, text, block, status) {
     }
   }
   const lines = stripBom(text).split('\n')
-  const body = scalarBodyLines(lines)
-  for (let i = 0; i < lines.length; i++) {
-    if (body.has(i)) continue
-    const line = lines[i]
-    if (/^[ \t]*#/.test(line)) continue
-    if (!/^[ \t]*-[ \t]+id[ \t]*:/.test(line)) continue
-    if (!line.includes('permission')) continue
-    if (PERMISSION_ROW.test(line)) continue
-    return {
-      ok: false,
-      status: 'unrecognized-id-form',
-      needRestart: false,
-      code: 'err.preset',
-      details: { error: 'unrecognized permission row spelling; refusing to add a second row' },
-    }
+  // 认得出块状拼写才放行；**条目里其它写法**（flow mapping、标签/锚点/转义的 id 值、多行序列项…）
+  // 只要点名了 permission 就拒绝写盘：`findPermissionRows` 认不出它 → 这里会追加**第二整块**，
+  // 而 DSH 里同一 id 后写的 config 整块覆盖前一条 → 用户自带的 presets 被静默丢掉。
+  // 宁可报错，也不动用户的文件；但**别的插件 config 里的同名键不算**（见 `mentionsPermissionRow`）。
+  const badRow = unrecognizedPermissionRowError(lines)
+  if (badRow) {
+    return { ok: false, status: 'unrecognized-id-form', needRestart: false, code: 'err.preset', details: badRow }
   }
   writeAtomic(patchPath, composed)
   return { ok: true, status, needRestart: true }
@@ -652,10 +878,10 @@ function writeComposed(patchPath, text, block, status) {
  * `target[key] = value`，不做深合并），所以目标必须是**最后一条**带 config 的 permission 行：
  * 认成第一条就会把键插进被覆盖的那一行——RPC 报成功、UI 说「已配置」，
  * 而 DSH 合成后 `config.presets` 里根本没有它。
- * @returns {{ config: object|null, presets: object|null, inlineConfig: boolean, inlinePresets: boolean }}
+ * @returns {{ config: object|null, presets: object|null, row: object|null, inlineConfig: boolean, inlinePresets: boolean }}
  */
 function findPermissionPresets(lines, rows) {
-  const out = { config: null, presets: null, inlineConfig: false, inlinePresets: false }
+  const out = { config: null, presets: null, row: null, inlineConfig: false, inlinePresets: false }
   // 只看**最后一条** permission 行：它的 config 在 DSH 里整块覆盖前面的。
   // 更早的行一律不参与——它们的 presets 可能仍然存在（不是我们该写的地方），
   // 从这里读出来会让「已配置」判定与 DSH 的真实结果脱节。
@@ -668,6 +894,8 @@ function findPermissionPresets(lines, rows) {
       return out
     }
     out.config = config
+    // 回报选中的行：调用方要校验它的 `name:`（写错时 DSH 整条跳过）。
+    out.row = row
     const inner = findBlockChild(lines, config.line, config.indent, 'presets')
     if (inner && inner.inline) out.inlinePresets = true
     else if (inner) out.presets = inner
@@ -684,13 +912,117 @@ function findPermissionPresets(lines, rows) {
  */
 function hasStrayRootEmptyArray(text) {
   const lines = String(text || '').split('\n')
-  let rootEmpty = false
-  let rootEntry = false
-  for (const line of lines) {
-    if (/^\[\][ \t]*(?:#.*)?\r?$/.test(line)) rootEmpty = true
-    else if (/^[ \t]*- /.test(line)) rootEntry = true
-  }
+  // 「列 0」是判据的一部分：`config:\n  inject:\n    []` 这种「某个键的空序列值写成独立一行」
+  // 是合法 YAML，按 `emptyArrayLines` 宽松判定会把它当成根数组字面量 → 永久 broken-patch 拒写。
+  // `[ ]` / 折行两种写法仍算（它们与条目混在一起同样是坏 YAML）。
+  const rootEmpty = [...emptyArrayLines(lines)].some((i) => indentOf(lines[i]) === 0)
+  const rootEntry = lines.some((line) => /^[ \t]*- /.test(line))
   return rootEmpty && rootEntry
+}
+
+/**
+ * 文档标记出现在**内容之后**（`...` 或 `---`）：文件是多文档，`parsePatchList` 期望单文档 →
+ * 直接抛 `expected a single document in the stream`。列 0 的标记在 compose 路径会被
+ * `stripDocumentMarkers` 去掉，但**插入路径不动标记**，于是「中途 `...`」的文件会被插入后
+ * 仍然解析不了，而插件报 ok。
+ */
+function hasInnerDocumentMarker(lines) {
+  let started = false   // 当前文档已经有内容（或已经出现过 `---`）
+  let ended = false     // 出现过 `...`：**文档已结束**，之后任何内容都是第二个文档
+  for (const line of lines) {
+    if (line.trim() === '' || line.trim().startsWith('#')) continue
+    if (DOC_START_LINE.test(line)) {
+      // 第二条 `---`、或内容之后又出现 `---` = 第二个文档。
+      if (started) return true
+      started = true
+      continue
+    }
+    if (DOC_END_LINE.test(line)) {
+      // `...` 结束**当前**文档：哪怕它出现在内容之前，后面的内容也已经是第二个文档
+      // （js-yaml 实测「`...` 换行再接 `- id: permission`」报 expected a single document）。
+      ended = true
+      continue
+    }
+    if (ended) return true
+    started = true
+  }
+  return false
+}
+
+/** patch 本身解析不了时的原因（写盘前一律先判，连 `already` 也不例外）。 */
+/** 文件里除空行/注释/文档标记外，是否只剩一个空数组字面量（`[]` / `[ ]` / 折行的 `[` `]`）。 */
+function isOnlyEmptyArrayLiteral(lines) {
+  const content = lines
+    .map((l) => l.trim().replace(/[ \t]+#.*$/, '').trim())   // 行尾注释（`[] # empty`）
+    .filter((t) => t !== '' && !t.startsWith('#') && t !== '---' && t !== '...')
+  if (content.length === 1) return /^\[[ \t]*\]$/.test(content[0])
+  return content.length === 2 && content[0] === '[' && content[1] === ']'
+}
+
+function brokenPatchReason(lines) {
+  if (hasStrayRootEmptyArray(lines.join('\n'))) {
+    return 'patch mixes a bare [] with entries; it cannot be parsed, fix it by hand'
+  }
+  if (hasInnerDocumentMarker(lines)) {
+    return 'patch contains a document marker (---/...) after content; DSH expects a single document'
+  }
+  /**
+   * 根不是**块状序列**：DSH 的 `parsePatchList` 要求顶层数组。根 mapping（`auto-approve:` /
+   * `config:`）、`{}`、`null`、以及**非空 flow 序列**（`[{id: …}]`）都解析不了——往这种文件里
+   * 追加条目会写出「flow 序列 + 块序列」的混合体（比改前更坏），而 RPC 还报成功、UI 说
+   * 「已写入，请重启」，profile 直接起不来。空数组字面量不算（那条路会整段替换它）。
+   */
+  const first = lines.find((l) => {
+    const t = l.trim()
+    return t !== '' && !t.startsWith('#') && t !== '---' && t !== '...'
+  })
+  if (first === undefined) return ''
+  const head = first.trim()
+  if (head.startsWith('[')) {
+    return isOnlyEmptyArrayLiteral(lines) ? '' : 'patch root is a flow sequence; DSH expects a block list of entries'
+  }
+  if (!/^-[ \t]*/.test(first) && head !== '-') return 'patch root is not a sequence; DSH expects a top-level list'
+  /**
+   * 条目必须是 mapping：`- just-a-string` / `- 42` / `- [a]` 都是合法 YAML 的序列，但 DSH 的
+   * `parsePatchList` 会抛 `entry 1 is not a mapping`——照样是「报成功而 profile 起不来」。
+   * 判据放宽到「有冒号 / 是 flow mapping / 是锚点别名标签」，认不出的写法宁可拒绝。
+   */
+  const item = /^-([ \t]+)(.*)$/.exec(first)
+  if (item) {
+    const rest = item[2].replace(/[ \t]+#.*$/, '').trim()
+    if (rest !== '' && !rest.startsWith('{') && !rest.includes(':') && !/^[*&!]/.test(rest)) {
+      return 'patch entries must be mappings; DSH expects every entry to be a mapping'
+    }
+  }
+  return ''
+}
+
+/** permission 插件在 DSH 里的 entry name：patch 行的 `name:` 写错时 `applyEntryPatches` 整条跳过。 */
+const PERMISSION_PLUGIN_NAME = '@deepseek-ai/dsh-permission-presets'
+
+/**
+ * 目标 permission 行自己的 `name:` 值（直接子键，去引号与行尾注释）；没有 name 返回 ''。
+ * DSH 的 `applyEntryPatches`：`if (name && name !== target.name) { warn(...); continue }`
+ * ——写错 name 的整条 patch 被丢弃，插件若照旧报 ok/updated，用户看到的是「已配置」，
+ * 而他的预设从来没生效过。
+ */
+function permissionRowName(lines, row) {
+  const body = scalarBodyLines(lines)
+  const childIndent = directChildIndent(lines, row)
+  for (let i = row.line + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const indent = indentOf(line)
+    if (indent <= row.indent) break
+    // **只认直接子键**：`findBlockChild` 会一路扫到更深层，于是预设自己的
+    // `name: 自动审批`（在 config.presets.auto-approve 下面）会被当成这一行的 name，
+    // 把一个完全正常的文件判成 name 不匹配。
+    if (indent !== childIndent || body.has(i)) continue
+    if (childKeyName(line) !== 'name') continue
+    const colon = line.indexOf(':')
+    return unquote(stripTrailingComment(line.slice(colon + 1)).trim())
+  }
+  return ''
 }
 
 export function ensureAutoApprovePreset(patchPath, sandbox = 'workspace-write') {
@@ -699,17 +1031,48 @@ export function ensureAutoApprovePreset(patchPath, sandbox = 'workspace-write') 
     // 于是走「追加整块」写出第二条 permission 行——patch 语义下后写的 config 整块覆盖，
     // 用户自己的 presets 静默消失。
     const text = stripBom(readFileSync(patchPath, 'utf8'))
-    if (hasAutoApprovePreset(text)) return { ok: true, status: 'already', needRestart: false }
-
     const lines = text.split('\n')
+    /**
+     * 坏文件（根部混了裸 `[]` 与条目、内容之后还有文档标记）先判，**连 `already` 也不例外**：
+     * 它们本来就解析不了，返回 `already/ok` 只会让 UI 说「已配置」而 DSH 根本读不到这份 patch
+     * （AGENTS：这种情况直接拒绝写盘、不许报成功）。
+     */
+    const broken = brokenPatchReason(lines)
+    if (broken) {
+      return { ok: false, status: 'broken-patch', needRestart: false, code: 'err.preset', details: { error: broken } }
+    }
+    /**
+     * **任何**路径都不能在「存在认不出的 permission 行」时报 already/ok：那条行可能排在后面
+     * 把这一整块盖掉（DSH 同 id 后者胜、config 整块赋值）。放在 `already` 之前，UI 才会显示
+     * 「需要手工处理」而不是「已配置」。
+     */
+    const badRow = unrecognizedPermissionRowError(lines)
+    if (badRow) {
+      return { ok: false, status: 'unrecognized-id-form', needRestart: false, code: 'err.preset', details: badRow }
+    }
     const rows = findPermissionRows(lines)
+    const found = findPermissionPresets(lines, rows)
+    // `name:` 写错的 permission 行会被 DSH 整条跳过（`applyEntryPatches`）：这种文件里报
+    // 「已配置 / 已写入」都是假话，明确报错、不动文件。
+    if (found.row) {
+      const rowName = permissionRowName(lines, found.row)
+      if (rowName && rowName !== PERMISSION_PLUGIN_NAME) {
+        return {
+          ok: false,
+          status: 'name-mismatch',
+          needRestart: false,
+          code: 'err.preset',
+          details: { error: `permission row name is "${rowName}", DSH expects "${PERMISSION_PLUGIN_NAME}" and skips the whole entry` },
+        }
+      }
+    }
+    if (hasAutoApprovePreset(text)) return { ok: true, status: 'already', needRestart: false }
 
     if (rows.length === 0) {
       const block = FULL_PERMISSION_BLOCK + autoApprovePresetYaml(sandbox)
       return writeComposed(patchPath, text, block, 'added-entry')
     }
 
-    const found = findPermissionPresets(lines, rows)
     const { config: blockConfig, inlineConfig, inlinePresets } = found
     /**
      * 空的 `presets:`（null / 没有子键）等同于「没有这张表」：只往里插一个 auto-approve 键
@@ -772,8 +1135,12 @@ export function ensureAutoApprovePreset(patchPath, sandbox = 'workspace-write') 
     // 插到 presets 块最后一个子键之后：块结束于第一条缩进 <= presets 的非空行。
     const insertAt = blockEndIndex(lines, presets.line, presets.indent)
     // 直接子键的缩进与用户文件一致（用户可以用 4 空格），而不是写死 +2。
-    const childIndent = autoApproveChildIndent(lines, presets)
-    lines.splice(insertAt + 1, 0, autoApprovePresetYaml(sandbox, childIndent).replace(/\n$/, ''))
+    const childIndent = directChildIndent(lines, presets)
+    // 插入的行跟随原文件的换行风格（CRLF 文件里插 LF 会写出混合换行，与上面
+    // 「空 presets 补齐」那条分支同一套处理）。
+    const crlf = lines[presets.line].endsWith('\r')
+    const inserted = autoApprovePresetYaml(sandbox, childIndent).replace(/\n$/, '')
+    lines.splice(insertAt + 1, 0, crlf ? inserted.split('\n').join('\r\n') + '\r' : inserted)
     const next = lines.join('\n')
     const withNewline = next.endsWith('\n') ? next : next + '\n'
     return finishPresetInsert(patchPath, withNewline, 'added-preset', presets.line, presets.indent, childIndent)

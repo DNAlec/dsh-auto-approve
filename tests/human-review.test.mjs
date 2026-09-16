@@ -19,6 +19,7 @@ import {
   DEFAULT_CRITERIA_ZH,
   JUDGE_REQUEST_BUDGET_MIN,
   buildJudgePrompt,
+  pickToolArgs,
   shippedCriteria,
   shippedLevels,
   resolveJudgePromptTemplate,
@@ -32,6 +33,7 @@ import {
   canonicalArgsForGrant,
   clipNoticeText,
   createGrantLedger,
+  createPortalStore,
   denyReasonFor,
   denyReasonKey,
   formatDenyNotice,
@@ -144,7 +146,9 @@ function sessionOf(cwd, id) {
 
 /** 走一遍 pre-execute（缓存参数）→ approval/request。 */
 async function gated(ctx, { toolName, args, session, nextFn, callId }) {
-  const id = callId || ('call-' + Math.random().toString(36).slice(2))
+  // `callId: ''` 是**有意义**的入参（DSH 侧可以不传 callId，归因走 session+工具名兜底键）：
+  // 只有完全没给才随机生成，否则 `''` 会被随机 id 顶掉，那条路径永远测不到。
+  const id = callId === undefined ? ('call-' + Math.random().toString(36).slice(2)) : callId
   for (const h of ctx._listeners.get('tools/pre-execute') || []) {
     await h({ callId: id, agent: { session }, arguments: args }, () => undefined)
   }
@@ -267,6 +271,10 @@ describe('拒绝原因回传与模型转人工', { concurrency: false }, () => {
     // 人明确拒绝：说清是人拒的，且不再指路转人工（问了也没用）。
     const denied = await humanPathNotice(ctx, { args: { command: 'echo hi2' }, answer: 'rejected' })
     assert.match(denied, /人工审批拒绝/)
+    assert.match(denied, /人明确拒绝了这次操作/)
+    // 这句 notice 只会由**原生审批框**的结论发出（模型求复核那次调用不追加 notice），人在框里看到的
+    // 是这次操作的详情行与升级理由——不许声称「模型请求复核」，那对原生拒绝就是假话（实测踩过）。
+    assert.doesNotMatch(denied, /模型请求复核/)
     assert.doesNotMatch(denied, new RegExp(TOOL))
     // 没人在场：同样要说清「不是人拒的」（DSH 原文是 the user rejected），但也不指路。
     const unavailable = await humanPathNotice(ctx, { args: { command: 'echo hi3' }, answer: 'unavailable' })
@@ -289,8 +297,13 @@ describe('拒绝原因回传与模型转人工', { concurrency: false }, () => {
     assert.equal(result.status, 'approved')
 
     // 原参数重试：被凭证放行，且**不再**进入关键词/审核表判定。
-    const retry = await gated(ctx, { toolName: 'bash', args: target, session })
+    const retry = await gated(ctx, { toolName: 'bash', args: target, session, callId: 'grant-retry-1' })
     assert.equal(retry.outcome, 'allowed-once')
+    // 凭证放行那条事件也要带 callId：它是「每一行都能对上那次调用」的一环（曾经漏过）
+    const granted = await ctx._rpc('events', { sessionId: 'sess-grant', callId: 'grant-retry-1' })
+    const row = granted.value.events.find((e) => e.path === 'human-grant')
+    assert.ok(row, '应有 human-grant 事件')
+    assert.equal(row.callId, 'grant-retry-1')
 
     // 同一凭证已消耗：再来一次要走完整管道（这里 keyword 命中 → 仍拒绝）。
     const replay = await gated(ctx, { toolName: 'bash', args: target, session })
@@ -393,6 +406,73 @@ describe('拒绝原因回传与模型转人工', { concurrency: false }, () => {
     assert.equal(outcome, 'rejected', '没采集到参数就不许被凭证放行')
   })
 
+  it('撞收集护栏的调用不许被一次性凭证放行（凭证键看不见被丢掉的字段）', async () => {
+    // 凭证键只是**拍平投影**：一次 `{command}` 的批准会放行一次「同投影 + 一个 8MB 隐藏字段」
+    // 的调用——那个字段既没上卡片、也没进事件，人从没看见过。与闸门同一条规则：撞护栏按
+    // `truncatedAction` 处理，不许被任何「放行」路径短路。
+    const session = sessionOf('ws-hr', 'sess-grant-guard')
+    const target = { command: 'echo grant-guard' }
+    ctx._humanAnswers.push('allowed-once')
+    const ok = await ctx._registered[0].execute(
+      { tool: 'bash', arguments: target, justification: '批准这次操作' },
+      { callId: 'escalate-guard-1', agent: { session }, signal: new AbortController().signal },
+    )
+    assert.equal(ok.status, 'approved')
+    const withHuge = { command: 'echo grant-guard', junk: 'z'.repeat(9 * 1024 * 1024) }
+    const blocked = await gated(ctx, {
+      toolName: 'bash', args: withHuge, session, nextFn: async () => 'web-human',
+    })
+    assert.equal(blocked.outcome, 'web-human', '撞护栏 → 走闸门（默认 truncatedAction=human），凭证不许放行')
+    // 凭证没有被消耗：同投影的正常调用仍然认得出（否则「批准一次」会被一次护栏调用白吃）
+    const retry = await gated(ctx, { toolName: 'bash', args: target, session })
+    assert.equal(retry.outcome, 'allowed-once', '正常重试仍要用得上那次批准')
+  })
+
+  it('转人工工具的 refused code 接线：有会话但缺 callId 时报 no-callid（不是 no-session）', async () => {
+    // 光有话术用例不够：把调用点退回 `refuse('no-session')` 时话术仍在、只是报错原因变成假话。
+    const session = sessionOf('ws-hr', 'sess-no-callid')
+    const res = await ctx._registered[0].execute(
+      { tool: 'bash', arguments: { command: 'echo x' }, justification: '理由' },
+      { callId: '', agent: { session }, signal: new AbortController().signal },
+    )
+    assert.equal(res.status, 'refused')
+    assert.equal(res.code, 'no-callid')
+  })
+
+  it('无 callId 的人工复核也要结算：批准不发「机器拒绝」，人拒归因成人工', async () => {
+    // 写侧（`rememberDeny`）在没有 callId 时用 session+工具名兜底键；结算侧（`settleDeny`）
+    // 漏了这条键，于是一次「无 callId 的人工复核」永远停在机器否决归因上：人批准了，
+    // post-execute 仍告诉模型「自动审批拒绝了 X（机器判定，不是用户拒绝）」。
+    // 注意无 callId 的请求拿不到缓存参数（`callCacheKey('')` 为空），所以它要么走
+    // 「参数没采集到」（直接拒绝、不弹框），要么走插件异常转人工——这里用后者，
+    // 它是唯一能到达人工框的无 callId 路径。
+    const session = sessionOf('ws-hr', 'sess-settle-nocallid')
+    const handlers = ctx._listeners.get('approval/request') || []
+    const askNoCallId = async (answer) => {
+      const req = {
+        agent: { session },
+        toolName: 'bash',
+        callId: '',
+        reason: 'escalate sandbox to danger-full-access: 无 callId 的人工复核',
+      }
+      // `judgeOperation` 读 `req.signal` 时抛 → 插件异常 → 转人工（可带 callId 也可不带）
+      Object.defineProperty(req, 'signal', { get() { throw new Error('boom-signal') }, configurable: true })
+      const outcome = await handlers[0](req, async () => answer)
+      const text = (await postExecute(ctx, { toolName: 'bash', session, callId: '' }))
+        .map((c) => c.content[0].text).join('\n')
+      return { outcome, text }
+    }
+
+    const approved = await askNoCallId('allowed-once')
+    assert.equal(approved.outcome, 'allowed-once')
+    assert.doesNotMatch(approved.text, /自动审批拒绝了/, '人批准过的不许再收到机器拒绝通知')
+
+    const denied = await askNoCallId('rejected')
+    assert.equal(denied.outcome, 'rejected')
+    assert.match(denied.text, /人工审批拒绝了/, '人拒要归因成人工拒绝')
+    assert.doesNotMatch(denied.text, /机器判定/, '不是机器判的')
+  })
+
   it('人工拒绝是终局：同一操作不再弹框', async () => {
     const session = sessionOf('ws-hr', 'sess-denied')
     const target = { command: 'sudo rm -rf /srv/prod' }
@@ -408,6 +488,84 @@ describe('拒绝原因回传与模型转人工', { concurrency: false }, () => {
     )
     assert.equal(second.status, 'refused')
     assert.equal(second.code, 'already-denied')
+  })
+
+  it('在途同键去重：同一个操作的第二条复核请求不会重复弹框', async () => {
+    // 语义务必是「已经在等人」，不是「本部署不提供人工复核」：后者会让模型放弃一个
+    // 马上就会有结论的步骤。这里真的把第一条挂在人工框上，再发第二条同参数的请求。
+    const session = sessionOf('ws-hr', 'sess-inflight')
+    const target = { command: 'echo inflight' }
+    let release
+    ctx._humanAnswers.push(new Promise((resolve) => { release = resolve }))
+    const first = ctx._registered[0].execute(
+      { tool: 'bash', arguments: target, justification: '第一个请求' },
+      { callId: 'escalate-inflight-1', agent: { session }, signal: new AbortController().signal },
+    )
+    // 让第一条走到「已在等人」那一步（approval.request 会挂住）
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const second = await ctx._registered[0].execute(
+      { tool: 'bash', arguments: target, justification: '重复请求' },
+      { callId: 'escalate-inflight-2', agent: { session }, signal: new AbortController().signal },
+    )
+    assert.equal(second.status, 'refused')
+    assert.equal(second.code, 'in-flight')
+    const text = ctx._registered[0].output.render({ tool: 'bash' }, second)[0].text
+    assert.match(text, /already waiting/, '要说清「已经在等人」，不是「功能不存在」')
+    assert.doesNotMatch(text, /not available/, 'in-flight 不是部署能力缺失')
+    release('allowed-once')
+    const done = await first
+    assert.equal(done.status, 'approved', '第一条照常拿到人工结论')
+    // 参数变了就是另一次操作：同键去重不该拦住它
+    ctx._humanAnswers.push('rejected')
+    const other = await ctx._registered[0].execute(
+      { tool: 'bash', arguments: { command: 'echo inflight changed' }, justification: '另一个操作' },
+      { callId: 'escalate-inflight-3', agent: { session }, signal: new AbortController().signal },
+    )
+    assert.equal(other.status, 'denied')
+  })
+
+  it('refused 的每种原因都回一句实话，不能都推给「本部署不提供人工复核」', async () => {
+    // already-denied / in-flight / need-justification 与「功能不存在」是三件不同的事：
+    // 共用一句模板时，模型会把「人拒绝了」转述成「这个部署没有人工复核」，
+    // 也会不去修一个本来改一下就能成功的参数。
+    const render = (code) => ctx._registered[0].output.render(
+      { tool: 'bash' }, { status: 'refused', tool: 'bash', code },
+    )[0].text
+    // 人已经明确拒绝过 → 必须复用 denied 的措辞（不是「功能不存在」）
+    assert.match(render('already-denied'), /^Human review DENIED for "bash"\./)
+    assert.doesNotMatch(render('already-denied'), /not available/)
+    // 参数可自行修复的三种 → 要告诉模型怎么修
+    assert.match(render('need-justification'), /justification/)
+    assert.match(render('need-justification'), /request review again/)
+    assert.match(render('bad-arguments'), /arguments/)
+    assert.match(render('bad-arguments'), /request review again/)
+    assert.match(render('bad-tool'), /bad-tool/)
+    // 真的不可用 / 未开启 → 保留「不要重试」
+    for (const code of ['disabled', 'no-session', 'no-callid', 'tool-renamed', 'grant-failed']) {
+      assert.match(render(code), /Do not retry/, code)
+    }
+    // 每条都要有**自己的内容断言**：只断言 /Do not retry/ 与「两两不同」时，default 分支
+    // 把 code 插进文案就能让四条分支整条删掉而全绿（实测过）。
+    assert.match(render('bad-tool'), /review tool itself/)
+    assert.match(render('tool-renamed'), /renamed in settings/)
+    assert.match(render('grant-failed'), /could not be recorded/)
+    assert.match(render('no-session'), /no session to route/)
+    assert.match(render('no-callid'), /no id, so the question cannot be routed/)
+    assert.match(render('in-flight'), /already waiting for a person/)
+    assert.match(render('need-justification'), /"justification" argument is required/)
+    assert.match(render('bad-arguments'), /"arguments" must be an object/)
+    assert.match(render('already-denied'), /^Human review DENIED/)
+    assert.match(render('disabled'), /not available for "bash" in this deployment/)
+    // 有会话但缺 callId 与「本部署没开启」是两件事：前者说清「这次调用没有 id 可路由」，
+    // 共用 no-session 那句会在有会话时变成假话。
+    assert.match(render('no-callid'), /no-callid/)
+    assert.doesNotMatch(render('no-callid'), /no-session/)
+    // 未知 code 走兜底，且把 code 印出来便于排障
+    assert.match(render('some-new-code'), /some-new-code/)
+    // 九种原因的话术两两不同（共用一句就说明有分支没写）
+    const codes = ['already-denied', 'in-flight', 'need-justification', 'bad-tool', 'bad-arguments', 'tool-renamed', 'grant-failed', 'no-session', 'no-callid', 'disabled']
+    const texts = codes.map(render)
+    assert.equal(new Set(texts).size, codes.length, '每种原因的话术必须各不相同')
   })
 
   it('转人工请求永不被自动判定吞掉：关键词/审核表都不参与', async () => {
@@ -667,6 +825,54 @@ describe('送审上限可配：设置页写入并回读', { concurrency: false }
 })
 
 describe('转人工工具的纯函数', { concurrency: false }, () => {
+  it('在途暂存（portal）：认领一次、结算写回、条目 TTL 清理、dispose 清空', () => {
+    // 这块此前零单测：`claim` 的「只认领一次」是「重复复核请求不再二次弹框」的全部依据，
+    // `prune` 是工具崩在 handler 之前时唯一的清理路径。
+    const portal = createPortalStore({ ttlMs: 1000 })
+    const rec = { sessionId: 's', callId: 'c1', toolName: 'bash', arguments: { command: 'x' } }
+    portal.put('s', 'c1', rec, 1000)
+    assert.deepEqual(portal.get('s', 'c1').arguments, { command: 'x' })
+    const claimed = portal.claim('s', 'c1', 1000)
+    assert.equal(claimed.handled, true)
+    assert.equal(claimed.forwarded, true)
+    assert.equal(portal.claim('s', 'c1', 1000), undefined, '同一条记录只认领一次')
+    // 结算写回原记录（不另开结果表）
+    portal.settleRecord('s', 'c1', { consumed: true })
+    assert.equal(portal.get('s', 'c1').consumed, true)
+    assert.equal(portal.get('s', 'c1').toolName, 'bash', '结算不许把身份字段冲掉')
+    // TTL：下一次 put 时顺带清掉过期的（工具崩在 handler 之前时没有别的归宿）
+    portal.put('s', 'c2', { sessionId: 's', callId: 'c2' }, 1000)
+    portal.put('s', 'c3', { sessionId: 's', callId: 'c3' }, 1000 + 2000)
+    assert.equal(portal.get('s', 'c1'), undefined, '过期的记录被清掉')
+    assert.equal(portal.get('s', 'c2'), undefined)
+    assert.ok(portal.get('s', 'c3'), '没过期的不动')
+    // 没有 callId 的请求不入表（那一路没有可关联的键）
+    portal.put('s', '', { sessionId: 's' }, 3000)
+    assert.equal(portal.get('s', ''), undefined)
+    // 不认识/已清掉的键不抛
+    assert.equal(portal.claim('s', 'nope'), undefined)
+    portal.settleRecord('s', 'nope', { consumed: true })
+    portal.dispose()
+    assert.equal(portal.get('s', 'c3'), undefined, 'dispose 清空（热更新不留绕过门控的放行）')
+  })
+
+  it('src 查表只看自有键：原型链上的名字不许变成事件里的「原因」', () => {
+    // `SRC_TO_REASON[src]` 是普通对象查表时，`src='constructor'` 会返回 Object 构造函数，
+    // `denyReasonKey` 再把它 String() 成 "function Object() { [native code] }" 写进事件与
+    // 决策叶子（都不在闭集里）。今天 src 只来自内部闭集，但这条查表必须自己挡住。
+    for (const src of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      for (const path of ['criteria-human', 'criteria-reject', 'truncated-payload']) {
+        const reason = denyReasonKey({ path, src })
+        assert.equal(typeof reason, 'string', `${path}/${src}`)
+        assert.equal(/function|native code/.test(reason), false, `${path}/${src} → ${reason}`)
+      }
+    }
+    // 真实闭集值照旧
+    assert.equal(denyReasonKey({ path: 'criteria-human', src: 'timeout' }), 'judge-timeout')
+    assert.equal(denyReasonKey({ path: 'criteria-reject', src: 'none' }), 'judge-unparsed')
+    assert.equal(denyReasonKey({ path: 'criteria-reject', src: 'strict' }), 'criterion')
+  })
+
   it('复核提示框的正文要带上「要批准的具体操作」', () => {
     // DSH 的审批框只渲染 `reason` 与按 callId 查到的那次调用的顶层 command；复核请求的
     // callId 是转人工工具自己那次调用，详情行永远是空的——操作摘要必须写进 reason，
@@ -685,6 +891,13 @@ describe('转人工工具的纯函数', { concurrency: false }, () => {
     // 理由只出现一次：以前 justification 与可选的 reason 会被 ` — ` 连成两段复述
     assert.equal(zh.split('模型理由：').length - 1, 1)
     assert.equal(en.split("Model's reason:").length - 1, 1)
+    // 模型理由被截断时要**说出来**：静默砍到 300 字，人以为自己读完了它的全部理由
+    const longWhy = 'x'.repeat(400)
+    const clippedZh = formatReviewRequestReason('bash', longWhy, 'zh', 'echo hi')
+    assert.match(clippedZh, /（已截断）$/)
+    assert.match(formatReviewRequestReason('bash', longWhy, 'en', 'echo hi'), /\(truncated\)$/)
+    // 短理由不加标记
+    assert.equal(formatReviewRequestReason('bash', 'why', 'zh', 'echo hi').includes('已截断'), false)
   })
 
   it('判决备忘：按规范化参数取回，键序无关，有界，可析构', () => {
@@ -719,6 +932,15 @@ describe('转人工工具的纯函数', { concurrency: false }, () => {
     assert.equal(formatVerdictBrief({ path: 'keyword-reject', keyword: 'wipefs' }, 'zh'), '命中关键词红线: wipefs')
     assert.equal(formatVerdictBrief({ path: 'truncated-payload', src: 'truncated' }, 'zh'), '内容超过送审上限')
     assert.equal(formatVerdictBrief({}, 'zh'), '')
+    // **判据只看 `path`**：`reason` 只决定「在闭集里挑哪句文案」，随手多带一个 reason 不许把
+    // 一次正常转人工显示成「审核模型调用失败」（那是错误归因）。
+    for (const path of ['criteria-human', 'keyword-human', 'human-review', 'criteria-allow', '']) {
+      assert.equal(formatVerdictBrief({ path, reason: 'judge-call', level: 'high' }, 'zh'), '', path || '(空)')
+    }
+    // 机器否决那四类照旧给一句话（`MACHINE_REJECT_PATHS` 是闭集）
+    for (const path of ['keyword-reject', 'criteria-reject', 'truncated-payload', 'plugin-error']) {
+      assert.notEqual(formatVerdictBrief({ path, reason: 'judge-call' }, 'zh'), '', path)
+    }
   })
 
   it('复核正文按定稿排版：判决 → 操作 → 模型理由，且不再说「已拒绝」', () => {
@@ -746,6 +968,24 @@ describe('转人工工具的纯函数', { concurrency: false }, () => {
     assert.equal(ledger.take('s', 'bash', { a: 1 }), true)
   })
 
+  it('凭证键不吃 magic key：参数不同的调用绝不共用同一个凭证（__proto__ / constructor）', () => {
+    // `out['__proto__'] = v` 走原型 setter：投影或规范化任一侧把它写丢，两次参数不同的调用
+    // 就会算出同一个凭证键——人批准过一次「无参数调用」，一次 `{"constructor":"x"}` 的调用
+    // 就能直接放行（凭证快通道在关键词层之前）。两侧都必须建自有属性。
+    const empty = canonicalArgsForGrant(pickToolArgs({}))
+    const proto = canonicalArgsForGrant(pickToolArgs(JSON.parse('{"__proto__":{"command":"cat /etc/shadow"}}')))
+    const ctor = canonicalArgsForGrant(pickToolArgs(JSON.parse('{"constructor":"x"}')))
+    assert.notEqual(proto, empty, '__proto__ 参数必须改变凭证键')
+    assert.notEqual(ctor, empty, 'constructor 参数必须改变凭证键')
+    assert.equal(canonicalArgsForGrant({ ['__proto__']: '1' }), '{"__proto__":"1"}', '导出 API 自己也不许把键写丢')
+    const ledger = createGrantLedger()
+    assert.equal(ledger.grant('s', 'bash', pickToolArgs({})), true)
+    assert.equal(ledger.take('s', 'bash', pickToolArgs(JSON.parse('{"constructor":"x"}'))), false, '凭证不许被参数不同的调用消耗')
+    assert.equal(ledger.take('s', 'bash', pickToolArgs(JSON.parse('{"__proto__":{"command":"x"}}'))), false)
+    // 真正同一个调用（同一个 magic key、同一个值）仍然认得出凭证
+    assert.equal(ledger.take('s', 'bash', pickToolArgs({})), true)
+  })
+
   it('凭证有有效期：过期后不再放行', () => {
     const ledger = createGrantLedger()
     ledger.grant('s', 'bash', { a: 1 }, 1000)
@@ -761,14 +1001,24 @@ describe('转人工工具的纯函数', { concurrency: false }, () => {
     assert.notEqual(ledger.beginInflight('s', 'bash', { a: 1 }), '')
   })
 
-  it('审核提示词的追加段只讲通用角色，不规定输出格式、不点名出厂 id', () => {
+  it('审核提示词的追加段写给审核模型：不点转人工工具名、不说「已拒绝」、不规定输出格式', () => {
     const base = 'BASE\n\n审核表：\n- other：兜底'
-    const zh = withEscalationNote(base, { lang: 'zh', toolName: TOOL })
+    const zh = withEscalationNote(base, { lang: 'zh' })
     assert.ok(zh.startsWith(base), '自定义模板必须原样保留，只追加')
-    assert.match(zh, new RegExp(TOOL))
     assert.doesNotMatch(zh, /类别:/, '格式只在模板里规定一次，追加段不得再规定一遍')
-    const en = withEscalationNote(base, { lang: 'en', toolName: TOOL })
-    assert.match(en, new RegExp(TOOL))
+    // 这段是给**审核模型**（只做归类的纯补全）看的：它没有工具，也不需要知道工具叫什么。
+    // 曾经写成 `自动审批已拒绝 ${toolName}。…调用转人工工具…`，渲染出来就是
+    // 「自动审批已拒绝 request_human_approval」——既假又自指（下一句还得声明它不在此列）。
+    assert.doesNotMatch(zh, new RegExp(TOOL), '不该出现转人工工具名')
+    assert.doesNotMatch(zh, /已拒绝/, '没有任何东西被拒绝：这是判定前的说明')
+    assert.doesNotMatch(zh, /调用[^。]*工具/, '审核模型不调用工具，别教它调')
+    const en = withEscalationNote(base, { lang: 'en' })
+    assert.doesNotMatch(en, new RegExp(TOOL))
+    assert.doesNotMatch(en, /rejected/i)
+    // 语言对齐：追加段按 lang 选，且不依赖转人工工具名（缺名也照常出现）
+    // 注意**不是幂等**：同一份提示词追加两次会出现两遍，调用方（`judgeFramework`）只调一次。
+    assert.match(zh, /模型转人工/)
+    assert.match(en, /human review/i)
   })
 
   it('other 行与普通行同权：类别、等级、理由一律照给，不做任何特殊处理', () => {
@@ -854,7 +1104,8 @@ describe('转人工工具的纯函数', { concurrency: false }, () => {
     ledger.deny('s', 'bash', target)
     assert.equal(ledger.isDenied('s', 'bash', target), true)
     for (let i = 0; i < 600; i++) ledger.deny('s', 'bash', { command: 'op-' + i })
-    // 上限只淘汰「再没被问起过」的记录；被问起的这条命中即刷新，不能被挤掉。
+    // 存的是**定长摘要**且上限远大于实际条数（见 `createGrantLedger` 的注释）：
+    // 这里断言的是「第 65 条之后的拒绝不会把已有的终局挤掉」，不是「命中即刷新」（没有那种刷新机制）。
     assert.equal(ledger.isDenied('s', 'bash', target), true)
   })
 
@@ -933,6 +1184,37 @@ describe('跨文件写盘失败要整体回滚', { concurrency: false }, () => {
     return { prev, dir }
   }
 
+  it('外部改 config.json 的语言：**第一次** RPC 就要是新语言的等级说明（reloadBoth 顺序）', async () => {
+    // `syncLevelLanguage()` 依赖 config 的语言 + allowlist 的说明：写在 `reloadAllowlist()` 内部时
+    // 用的是**上一次请求**的 `pluginCfg`（外部改语言后第一次送审是「新框架 + 旧说明」，第二次才收敛）。
+    // 变异：把它挪回 `reloadPluginCfg()` 之前 → 这套用例全绿（第 5 轮验证性复审抓到）。
+    const { prev, dir } = setup()
+    try {
+      const ctx2 = createCtx()
+      apply(ctx2, { onlyAutoApprovePreset: true })
+      const before = await ctx2._rpc('snapshot', {})
+      assert.equal(before.value.plugin.judgePromptLang, 'zh')
+      const zhLow = before.value.config.levels.descriptions.low
+      // 外部（手改 / 另一个进程）把语言改成 en
+      writeFileSync(
+        join(dir, 'auto-approve', 'config.json'),
+        JSON.stringify({ judgePromptLang: 'en', presetSandbox: 'workspace-write' }) + '\n',
+        'utf8',
+      )
+      const after = await ctx2._rpc('snapshot', {})
+      assert.equal(after.value.plugin.judgePromptLang, 'en')
+      assert.notEqual(after.value.config.levels.descriptions.low, zhLow, '第一次请求就必须换成英文说明')
+      assert.equal(
+        after.value.config.levels.descriptions.low,
+        shippedLevels('en').descriptions.low,
+        '出厂英文原文',
+      )
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prev
+    }
+  })
+
   it('rule-op 恢复默认表 + 切语言：config 写不动时把审核表也退回原语言', async () => {
     const { prev, dir } = setup()
     try {
@@ -955,6 +1237,93 @@ describe('跨文件写盘失败要整体回滚', { concurrency: false }, () => {
       const auditText = readFileSync(join(dir, 'auto-approve', 'audit.log'), 'utf8')
       assert.doesNotMatch(auditText, /criteria reset defaults lang=en/)
       assert.match(auditText, /失败（配置不可写）/)
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prev
+    }
+  })
+
+  it('rule-op 改审核超时：config 写不动时连 allowlist 一起回滚（超时的权威来源是 allowlist）', async () => {
+    // 与 `save-plugin` 那条是**两条独立的分支**（上一条用例走的是 save-plugin 的路）。
+    // 只回滚 config 时，用户看到「保存失败」而 allowlist 里已经是新超时——设置页刷新后显示新值、
+    // 实际判定也按新值跑，两个文件两个说法。
+    const { prev, dir } = setup()
+    try {
+      const ctx2 = createCtx()
+      apply(ctx2, { onlyAutoApprovePreset: true })
+      const allowlistPath = join(dir, 'auto-approve', 'allowlist.json')
+      const before = JSON.parse(readFileSync(allowlistPath, 'utf8')).judgeTimeoutMs
+      // 只让 config.json 写不动：把它的 .tmp 建成目录（writeAtomic 先写 .tmp）。
+      mkdirSync(join(dir, 'auto-approve', 'config.json.tmp'))
+      const res = await ctx2._rpc('rule-op', { op: 'set', kind: 'judgeTimeoutMs', value: 15000 })
+      rmSync(join(dir, 'auto-approve', 'config.json.tmp'), { recursive: true, force: true })
+      assert.equal(res.ok, false, 'config 写不动时不许报成功')
+      assert.equal(res.error.code, 'err.pluginWrite')
+      assert.equal(
+        JSON.parse(readFileSync(allowlistPath, 'utf8')).judgeTimeoutMs,
+        before,
+        'allowlist 必须回到原值（它是超时的权威来源）',
+      )
+      const snap = await ctx2._rpc('snapshot', {})
+      assert.equal(snap.value.config.judgeTimeoutMs, before)
+      assert.equal(snap.value.plugin.judge.timeoutMs, before)
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prev
+    }
+  })
+
+  it('rule-op 恢复默认表 + 切语言的**成功**路径：语言要落进 config.json，等级说明也跟着换', async () => {
+    // 失败路径有网（上一条），成功路径**没有**：把「写 config」那一步删掉时全部用例照绿，
+    // 而磁盘上是英文表 + 中文等级说明 + config 仍 zh，审计却写 `judgePromptLang → en`。
+    const { prev, dir } = setup()
+    try {
+      const ctx2 = createCtx()
+      apply(ctx2, { onlyAutoApprovePreset: true })
+      const cfgPath = join(dir, 'auto-approve', 'config.json')
+      const allowlistPath = join(dir, 'auto-approve', 'allowlist.json')
+      const levelBefore = JSON.parse(readFileSync(allowlistPath, 'utf8')).levels.descriptions.high
+      const res = await ctx2._rpc('rule-op', { op: 'reset', kind: 'criteria', value: { lang: 'en' } })
+      assert.equal(res.ok, true)
+      // ① 语言落盘
+      assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).judgePromptLang, 'en')
+      // ② 审核表是英文
+      const rows = JSON.parse(readFileSync(allowlistPath, 'utf8')).criteria
+      assert.match(rows.find((c) => c.id === 'deletion').description, /[A-Za-z]/, '英文表')
+      assert.notEqual(rows.find((c) => c.id === 'deletion').description, levelBefore)
+      // ③ 等级说明**磁盘上**也换了语言（`syncShippedLevels` 之后要落盘，否则要等下一次写盘）
+      const levels = JSON.parse(readFileSync(allowlistPath, 'utf8')).levels
+      assert.notEqual(levels.descriptions.high, levelBefore, '等级说明要跟着语言落盘')
+      assert.match(levels.descriptions.high, /[A-Za-z]/)
+      // ④ 审计写的是真实发生的事，且快照与磁盘一致
+      assert.match(readFileSync(join(dir, 'auto-approve', 'audit.log'), 'utf8'), /judgePromptLang → en/)
+      const snap = await ctx2._rpc('snapshot', {})
+      assert.equal(snap.value.plugin.judgePromptLang, 'en')
+      assert.equal(snap.value.config.levels.descriptions.high, levels.descriptions.high)
+    } finally {
+      if (prev === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prev
+    }
+  })
+
+  it('save-plugin 收到认不出的 presetSandbox：明确报错、不动 patch（不许静默按默认值放宽）', async () => {
+    // RPC 是外部可调的：`{presetSandbox:'nope'}` 会被 `mergePluginConfig` 归一成默认
+    // workspace-write，写盘就等于**放宽沙箱**。这里要求报错并且 patch 逐字节不变。
+    const { prev, dir } = setup()
+    try {
+      const patchPath = join(dir, 'profiles', 'web', 'cordis.patch.yml')
+      const ctx2 = createCtx()
+      apply(ctx2, { onlyAutoApprovePreset: true })
+      // 启动本身会写入 auto-approve 预设（`[]` → 一条条目）：基准必须在 apply **之后**取。
+      const before = readFileSync(patchPath, 'utf8')
+      const res = await ctx2._rpc('save-plugin', { presetSandbox: 'nope' })
+      assert.equal(res.ok, false)
+      assert.equal(res.error.code, 'err.presetSandbox')
+      assert.equal(readFileSync(patchPath, 'utf8'), before, '认不出的值不许改写 patch')
+      // 认得出的值照旧生效
+      const ok = await ctx2._rpc('save-plugin', { presetSandbox: 'workspace-write' })
+      assert.equal(ok.ok, true)
+      assert.match(readFileSync(patchPath, 'utf8'), /sandbox: workspace-write/)
     } finally {
       if (prev === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = prev
