@@ -238,12 +238,47 @@ describe('原生审批框的详情行（本插件接管）', () => {
     assert.match(four, /extra: keep-me/)
   })
 
-  it('「自动判定」那一行按事件行拼：关键词带命中词、审核表带等级、复核框不写', () => {
+  it('「自动判定」那一行按事件行拼：关键词带命中词、审核表带命中行 id 与等级、复核框不写', () => {
     const { verdictLineFromEvent } = api.__test
     assert.equal(
       verdictLineFromEvent(t, { path: 'keyword-human', keyword: 'NEEDS-HUMAN-TOKEN' }),
       '自动判定：关键词转人工（NEEDS-HUMAN-TOKEN）',
     )
+    // `path` 只说「怎么处置」，**是哪一行判的只有 id 说得出**：宿主把命中行放在顶层 `category`
+    // （pending 行）与 `judge.criterion`（`clipJudgeForEvent` 的存档）里，两个位置都要认。
+    // 框已经弹出来了，所以**不再重复写「审核表转人工」**：有 id 时这一行就是 id + 等级（与宿主
+    // 复核框 `bulk · high` 同一形状）；处置标签只在没有 id 时才出现，也只留在审批记录里。
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', category: 'other', level: 'medium' }),
+      '自动判定：other · medium',
+    )
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', judge: { criterion: 'bulk', level: 'medium' } }),
+      '自动判定：bulk · medium',
+      '宿主把类别与等级都存在 judge 里时也要读得到',
+    )
+    // 命中的 id 是**用户表里的 id**，一律原样显示（`other` 就是那个 id，不是「其他」）
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', category: 'deletion', level: 'high' }),
+      '自动判定：deletion · high',
+    )
+    // 兜底档要写出来（与宿主复核框同一条注记）：medium 是模型给的、还是等级认不出落下来的，不是同一件事
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', category: 'other', level: 'high', levelSrc: 'fallback' }),
+      '自动判定：other · high（兜底档）',
+    )
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', judge: { criterion: 'bulk', level: 'high', levelSrc: 'fallback' } }),
+      '自动判定：bulk · high（兜底档）',
+    )
+    // **类别认不出**（src=none，程序落兜底行）不写 id：那是失败关闭的产物，不是模型的结论
+    // （审计区的「判定来源」显示「认不出」，人不该以为模型选的就是 other 这一行）；
+    // 此时没有 id 可写，于是退回处置标签——它是这一格唯一说得清「为什么弹框」的东西。
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', category: 'other', level: 'high', src: 'none' }),
+      '自动判定：审核表转人工 · high',
+    )
+    // 缺 id 时退化成原来的形状（老事件行没有这两个字段）
     assert.equal(verdictLineFromEvent(t, { path: 'criteria-human', level: 'medium' }), '自动判定：审核表转人工 · medium')
     // 等级也可能只在 `judge.level` 里（自动判定那几条行就是这么存的）——两种形状都要认
     assert.equal(
@@ -251,13 +286,18 @@ describe('原生审批框的详情行（本插件接管）', () => {
       '自动判定：审核表转人工 · medium',
       '宿主把等级存在 judge 里时也要读得到',
     )
+    // 有 id 但没有等级（模型没给、兜底档也丢了）：只写 id，不留一个悬空的「 · 」
+    assert.equal(
+      verdictLineFromEvent(t, { path: 'criteria-human', category: 'other' }),
+      '自动判定：other',
+    )
     // **判定压根没跑成**时宿主走的仍是 criteria-human：只按 path 出标签会显示成
     // 「审核表转人工」，人就不知道模型其实一个字都没答（与宿主 JUDGE_FAILURE_SRCS 同口径）。
     for (const src of ['empty', 'timeout', 'call', 'route', 'plugin']) {
       assert.equal(
-        verdictLineFromEvent(t, { path: 'criteria-human', src, level: 'high' }),
+        verdictLineFromEvent(t, { path: 'criteria-human', src, level: 'high', category: 'other' }),
         '自动判定：判定失败转人工',
-        `src=${src} 要显示成判定失败`,
+        `src=${src} 要显示成判定失败（失败态没有模型选中的行可显示）`,
       )
     }
     assert.equal(verdictLineFromEvent(t, { path: 'judge-failed' }), '自动判定：判定失败转人工')
@@ -272,7 +312,73 @@ describe('原生审批框的详情行（本插件接管）', () => {
       if (tpl === undefined) return key
       return String(tpl).replace(/\{(\w+)\}/g, (m, name) => (params && params[name] !== undefined ? String(params[name]) : m))
     }
-    assert.equal(verdictLineFromEvent(tEn, { path: 'criteria-human', level: 'medium' }), 'Machine verdict: Criteria → human · medium')
+    assert.equal(
+      verdictLineFromEvent(tEn, { path: 'criteria-human', category: 'other', level: 'medium' }),
+      'Machine verdict: other · medium',
+    )
+  })
+
+  it('审核理由接在判决后面：有理由就写、判定没跑成不写、截断要交代', () => {
+    const { verdictLineFromEvent, humanVerdictReason } = api.__test
+    // 审核表判到 human：模型真的答了，判决（命中行 id · 等级）+ 它那句理由一起给人看
+    assert.equal(
+      verdictLineFromEvent(
+        t,
+        { path: 'criteria-human', judge: { criterion: 'system', level: 'medium', reason: '写系统目录，不可回补' } },
+      ),
+      '自动判定：system · medium\n审核理由：写系统目录，不可回补',
+    )
+    // `judgeReason` 是同一份理由的展示位（pending 行就是这么存的）：只有它时也要写
+    assert.equal(
+      humanVerdictReason(t, { path: 'criteria-human', judgeReason: '理由在顶层' }),
+      '\n审核理由：理由在顶层',
+    )
+    // 两个位置都有时以 `judge.reason` 为准（`judge` 才是判定现场的存档）
+    assert.equal(
+      humanVerdictReason(t, { judge: { reason: '存档' }, judgeReason: '展示位' }),
+      '\n审核理由：存档',
+    )
+    // **判定压根没跑成**时那一格装的是闭集证据（err.*），不是审核理由——不写
+    // （判决行那句「判定失败转人工」已经说清结局，原始证据在「审批」tab 里）。
+    for (const src of ['empty', 'timeout', 'call', 'route', 'plugin']) {
+      assert.equal(
+        humanVerdictReason(t, { path: 'criteria-human', src, level: 'high', judgeReason: 'err.judgeEffort' }),
+        '',
+        `src=${src} 不写理由`,
+      )
+    }
+    // 同一件事的另一处标记（宿主两条路都会打 `judge.failed`）
+    assert.equal(humanVerdictReason(t, { path: 'criteria-human', judge: { failed: true, reason: 'err.judgeTimeout' } }), '')
+    // 判定路径上的送审超预算：证据同样是 err.*（判决行已写「内容超过送审上限」）
+    assert.equal(
+      humanVerdictReason(t, { path: 'truncated-payload', src: 'truncated', judgeReason: 'err.judgePayloadOversize request=30000>20000' }),
+      '',
+    )
+    // 关键词人工桶：压根没问过模型，事件里没有任何理由字段
+    assert.equal(humanVerdictReason(t, { path: 'keyword-human', keyword: 'K' }), '')
+    assert.equal(humanVerdictReason(t, null), '')
+    assert.equal(humanVerdictReason(t, {}), '')
+    // 空白的理由不算理由（否则框里会多一行没有内容的「审核理由：」）
+    assert.equal(humanVerdictReason(t, { path: 'criteria-human', judge: { reason: '   \n  ' } }), '')
+    // 复核框：判决行刻意留空（标题已说明是模型求的复核），但审核模型说过的理由照写——
+    // 而且**不能**留一个空的判决行（这里是这一格的第一行，行首不许有换行）。
+    assert.equal(verdictLineFromEvent(t, { path: 'human-review', judgeReason: '拿不准' }), '审核理由：拿不准')
+    // 单行化：换行会被审批框折成空格，理由自己先收口
+    assert.equal(humanVerdictReason(t, { judgeReason: '第一行\n第二行\t 第三行' }), '\n审核理由：第一行 第二行 第三行')
+    // 截断必须说出来（共 N 字），不许静默砍掉尾巴
+    assert.match(humanVerdictReason(t, { judgeReason: 'x'.repeat(500) }), /^[\n]审核理由：x{200}（已截断，共 500 字）$/)
+    // 「操作」那一段占满了自己的 600 字预算时，理由给更短的额度（80），别把它挤走
+    assert.match(humanVerdictReason(t, { judgeReason: 'y'.repeat(500) }, 'z'.repeat(601)), /^[\n]审核理由：y{80}（已截断，共 500 字）$/)
+    // 额度内就整句留下（上限不是「一律截断」）；空白额度（操作没渲染出来）走 200 那一档
+    assert.equal(humanVerdictReason(t, { judgeReason: 'y'.repeat(60) }, 'z'.repeat(601)), '\n审核理由：' + 'y'.repeat(60))
+    assert.equal(humanVerdictReason(t, { judgeReason: 'y'.repeat(80) }, null), '\n审核理由：' + 'y'.repeat(80))
+    // 英文语言包同样有这两个键
+    const tEn2 = (key, params) => {
+      const tpl = en[key]
+      if (tpl === undefined) return key
+      return String(tpl).replace(/\{(\w+)\}/g, (m, name) => (params && params[name] !== undefined ? String(params[name]) : m))
+    }
+    assert.equal(humanVerdictReason(tEn2, { judgeReason: 'writes /etc' }), '\nJudge reason: writes /etc')
   })
 
   it('组件渲染不炸：详情行取会话里那次调用的参数，查不到就整块不渲染', () => {
@@ -310,10 +416,19 @@ describe('原生审批框的详情行（本插件接管）', () => {
     const calls = []
     const rpc = (endpoint, payload) => {
       calls.push([endpoint, payload])
-      return Promise.resolve({ events: [{ path: 'criteria-human', level: 'medium', callId: 'call-wire-1' }] })
+      // 事件形状照抄真实 pending 行（`forwardToHuman` 落的那条）：顶层 category/level + judge 存档
+      return Promise.resolve({
+        events: [{
+          path: 'criteria-human',
+          category: 'other',
+          level: 'medium',
+          callId: 'call-wire-1',
+          judge: { criterion: 'other', level: 'medium', src: 'strict', reason: '写系统目录，不可回补' },
+        }],
+      })
     }
-    const props = (sessionId, callId) => ({
-      slotsProps: { callId, sessionId, useChat: () => 'rm -rf /tmp/x' },
+    const props = (sessionId, callId, text) => ({
+      slotsProps: { callId, sessionId, useChat: () => (text === undefined ? 'rm -rf /tmp/x' : text) },
       t,
       rpc,
     })
@@ -322,13 +437,22 @@ describe('原生审批框的详情行（本插件接管）', () => {
     assert.deepEqual(calls, [['events', { sessionId: 'sess-wire-a', callId: 'call-wire-1' }]], '按会话 + callId 查一次')
     // 第二次渲染应当从缓存里拿到那一行（不再发查询）
     const rendered = JSON.stringify(ApprovalDetail(props('sess-wire-a', 'call-wire-1')))
-    assert.match(rendered, /自动判定：审核表转人工 · medium/)
+    assert.match(rendered, /自动判定：other · medium/)
+    assert.match(rendered, /审核理由：写系统目录，不可回补/, '事件里带审核理由时要写出来')
     assert.equal(calls.length, 1, '同一会话同一调用只查一次（缓存生效）')
     // 缓存键必须带会话：同一个 callId 在另一个会话里是**另一个**调用，要重新查
     ApprovalDetail(props('sess-wire-b', 'call-wire-1'))
     await new Promise((resolve) => setTimeout(resolve, 0))
     assert.equal(calls.length, 2, '不同会话的同名 callId 不能共用缓存（否则会显示别人的判决）')
     assert.deepEqual(calls[1], ['events', { sessionId: 'sess-wire-b', callId: 'call-wire-1' }])
+    // 缓存键还必须带**操作摘要的长度**：理由的截断额度按它算（>600 → 80 字），同一格在两个长度下
+    // 是两行——复用会把按另一个额度渲染的那一行贴上去。首次渲染进不了缓存（替身的 setState 不触发
+    // 重渲染），所以这里照上面的做法再渲染一次取缓存里的那一行。
+    ApprovalDetail(props('sess-wire-a', 'call-wire-1', 'z'.repeat(601)))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(calls.length, 3, '操作摘要长度变了要重算那一行（缓存键第三段）')
+    const tight = JSON.stringify(ApprovalDetail(props('sess-wire-a', 'call-wire-1', 'z'.repeat(601))))
+    assert.match(tight, /审核理由：写系统目录，不可回补/)
   })
 
   it('解析不出对象就返回 null（渲染不出来就不渲染，别抛进别人的 UI）', () => {

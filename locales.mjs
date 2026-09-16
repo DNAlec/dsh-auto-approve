@@ -141,6 +141,12 @@ export const zh = {
   'detail.judgeFailed': '判定失败（没跑成 → 固定转人工）',
 
   'approval.autoVerdict': '自动判定：',
+  // 审批框详情行里接在判决后面的审核理由（与历史 tab 的 `detail.judgeReason` 同一个标签词，
+  // 只是这里要带冒号与值，所以单独一个键）。
+  'approval.judgeReason': '审核理由：{text}',
+  // 理由被截断时的尾巴。与历史 tab 那个「（共 N 字；尾部：…）」（`detail.truncated`）不共用：
+  // 那是**操作**那一段的披露（留首尾），这里只是把模型的一句话截掉，写清还有多少字没显示即可。
+  'approval.judgeCut': '（已截断，共 {n} 字）',
   'set.title': '自动审批',
   'set.intro': '需要审批的调用交审核模型判定（允许 / 拒绝等同网页按钮），拿不准则交回原人工审批框。详细说明见 README。',
   'set.allowlistCorrupt': '规则文件损坏，当前是内存默认，普通保存不会覆盖磁盘。请修好 allowlist.json，或点「恢复默认」写回出厂规则。',
@@ -450,6 +456,8 @@ export const en = {
   'detail.judgeFailed': 'judgment failed (no verdict → always asks a human)',
 
   'approval.autoVerdict': 'Machine verdict: ',
+  'approval.judgeReason': 'Judge reason: {text}',
+  'approval.judgeCut': ' (truncated; {n} chars total)',
   'set.title': 'Auto-approve',
   'set.intro': 'Calls that need approval go to the judge model (allow / reject match the Web buttons); anything uncertain goes back to the original human dialog. Full details are in the README.',
   'set.allowlistCorrupt': 'The rules file is corrupt. This process is using in-memory defaults and will not overwrite the disk. Repair allowlist.json, or Restore defaults to write shipped rules.',
