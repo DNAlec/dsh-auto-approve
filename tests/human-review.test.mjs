@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.mjs'
-import { pathsFor } from '../src/util.mjs'
+import { pathsFor, NAME } from '../src/util.mjs'
 import {
   shippedRejectKeywords,
   DEFAULT_CRITERIA_ZH,
@@ -253,7 +253,14 @@ describe('拒绝原因回传与模型转人工', { concurrency: false }, () => {
     assert.match(text, /rm -rf \//)
     // 卡片/命令正文不进通知：只有关键词本身与工具名。
     assert.match(text, /TOOL|bash/)
-    assert.equal(contexts[0].source.kind, 'plugin')
+    /**
+     * `kind` 必须是生产者自己拥有的名字。这行断言以前写的是 `'plugin'`——**它把缺陷锁成了期望值**，
+     * 所以 V4 准入（`session-format-v3-to-v4/src/message-sources.ts` 拒绝 `kind === 'plugin'`）
+     * 一直在炸而测试全绿。回归见下面那条 `doesNotMatch`。
+     */
+    assert.equal(contexts[0].source.kind, `plugin:${NAME}`)
+    assert.notEqual(contexts[0].source.kind, 'plugin')
+    assert.doesNotMatch(contexts[0].source.kind, /^plugin$/)
   })
 
   it('第二次 post-execute 不再重复通知（归因是一次性的）', async () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 未发布
+
+### Fixes
+
+- **致命：拒绝通知的 `source.kind` 用了 V4 已废止的 `'plugin'`，会把整个会话永久打死**。DSH 0.2.0-rc.2 起，会话格式 V4 在**消息落盘路径**上做准入校验（`packages/session/session-format-v3-to-v4/src/message-sources.ts`）：`kind` 必须是**生产者自己拥有**的名字，字面量 `'plugin'` 直接抛 `SessionFormatError: format v4 message requires a producer-owned source kind`。而这条通知是在 `tools/post-execute` 里追加给**当前正在提交的回合**的，异常打断提交 → **会话冻结在最后一个 `tool/call`，此后一行记录都没有**（`turn/end` 永远缺一条，那一回合永久丢失）。
+  - **触发面是「任何一次非批准结局」，不是边角**：关键词拒绝、审核表拒绝、超预算、插件异常，以及**人工拒绝 / 无人应答**——只要 `getDeny` 有归因就会追加这条通知。实测：本机 3 个会话在机器拒绝后 **20–24 毫秒**停笔，与拒绝事件一一对应（`keyword-reject keyword="cordis.patch.yml"`）。
+  - 修法：`kind` 改为 `plugin:${NAME}`，与 V3→V4 迁移器给未知插件生成的形态一致（`sources.ts` 的 `producerKind()` 兜底分支就是 `plugin:${plugin}`），保证「插件新写」与「老会话迁移」得到同一个 kind；顺带删掉已无消费方的 `plugin` 字段（全仓检索确认只有 `src/index.mjs` 这一处写入，没有任何读取）。
+  - **回归**：`tests/human-review.test.mjs` 原断言写的是 `assert.equal(contexts[0].source.kind, 'plugin')`——**它把缺陷锁成了期望值**，所以这个必炸项一直全绿。现改为断言 `plugin:${NAME}` 并加 `notEqual('plugin')`。变异验证：把实现改回 `'plugin'`，该套件立刻 `pass 54 / fail 1`。
+
 ## 0.4.1
 
 > 人在审批框前决定放不放行时，也能看到审核模型给的那句理由了：详情行的「自动判定：…」下面新增一行「**审核理由：…**」（就是模型判定时写的 `理由:`，单行、上限 200 字、截断写明共多少字）。**判定压根没跑成时不写这一行**——那时事件里那句是 `err.*` 闭集证据，不是模型说的话。

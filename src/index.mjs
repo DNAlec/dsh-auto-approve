@@ -1621,7 +1621,28 @@ const NON_DENY_PATHS = new Set(['keyword-allow', 'criteria-allow', 'human-grant'
         id: randomUUID(),
         role: 'user',
         content: [{ type: 'text', text: `[${NAME}] ${notice}` }],
-        source: { kind: 'plugin', plugin: NAME, form: 'notice', summary },
+        /**
+         * `kind` 必须是**生产者自己拥有**的名字，绝不能是字面量 `'plugin'`。
+         *
+         * DSH 0.2.0-rc.2 起，会话格式 V4 在**消息落盘路径**上做准入校验
+         * （`packages/session/session-format-v3-to-v4/src/message-sources.ts`）：
+         *
+         *     if (… || value['kind'] === 'plugin') throw new SessionFormatError(
+         *       'format v4 message requires a producer-owned source kind')
+         *
+         * 而这条通知是**在 post-execute 里追加给当前回合**的，异常会打断正在提交的回合，
+         * 后果是**整个会话永久冻结在最后一个 tool/call 上**（实测：会话在机器拒绝后
+         * 20 余毫秒停笔，此后一行记录都没有，`turn/end` 永远缺一条）。
+         *
+         * 注意这条路径**不只是**关键词拒绝会走到：审核表拒绝、超预算、插件异常，
+         * 以及人工拒绝 / 无人应答，只要 `getDeny` 有归因就会追加——即**任何一次
+         * 非批准结局都会触发**，所以这是必炸项，不是边角。
+         *
+         * 用 `plugin:<name>` 与 V3→V4 迁移器给未知插件生成的形态一致
+         * （`sources.ts` 的 `producerKind()` 兜底分支就是 `plugin:${plugin}`），
+         * 这样同一条通知无论来自「插件新写」还是「老会话迁移」都是同一个 kind。
+         */
+        source: { kind: `plugin:${NAME}`, form: 'notice', summary },
       }
       return { ...decision, additionalContexts: [...(decision.additionalContexts || []), message] }
     } catch (error) {
